@@ -81,6 +81,8 @@ score_type search_worker::q_search(
   if (should_update) { external.on_update(*this); }
 
   ++internal.nodes;
+  if (!bd.man_.us(bd.turn()).king().any()) { return ss.loss_score(); }
+  if (!bd.man_.them(bd.turn()).king().any()) { return ss.win_score(); }
   const bool is_check = bd.is_check();
 
   if (bd.is_trivially_drawn()) { return draw_score; }
@@ -180,6 +182,8 @@ pv_search_result_t<is_root> search_worker::pv_search(
   // step 1. drop into qsearch if depth reaches zero
   if (depth <= 0) { return make_result(q_search<is_pv>(ss, eval_node, bd, alpha, beta, 0), chess::move::null()); }
   ++internal.nodes;
+  if (!bd.man_.us(bd.turn()).king().any()) { return make_result(ss.loss_score(), chess::move::null()); }
+  if (!bd.man_.them(bd.turn()).king().any()) { return make_result(ss.win_score(), chess::move::null()); }
 
   // step 2. check if node is terminal
   const bool is_check = bd.is_check();

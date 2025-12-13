@@ -27,7 +27,9 @@
 #include <search/search_constants.h>
 #include <search/syzygy.h>
 
+#include <algorithm>
 #include <sstream>
+#include <vector>
 
 namespace engine {
 
@@ -167,6 +169,7 @@ void uci::id_info() noexcept {
 
   os << "id name " << version::engine_name << " " << version::major << '.' << version::minor << '.' << version::patch << std::endl;
   os << "id author " << version::author_name << std::endl;
+  os << "option name UCI_Variant type combo default atomic var atomic" << std::endl;
   os << options();
   os << "uciok" << std::endl;
 }
@@ -223,6 +226,28 @@ void uci::probe() noexcept {
 void uci::perft(const search::depth_type& depth) noexcept {
   std::lock_guard<std::mutex> lock(mutex_);
   if (orchestrator_.is_searching()) { return; }
+  if (depth == 1) {
+    simple_timer<std::chrono::milliseconds> timer{};
+    const auto moves = position.generate_moves<>();
+    std::vector<std::string> names;
+    names.reserve(moves.size());
+    for (const auto& mv : moves) { names.push_back(mv.name(position.turn())); }
+    std::sort(names.begin(), names.end());
+
+    std::cout << "Running performance test to depth 1" << std::endl << std::endl;
+    for (const auto& name : names) { std::cout << ' ' << name << ": 1" << std::endl; }
+
+    const std::size_t nodes = moves.size();
+    const auto elapsed_ms = timer.elapsed().count();
+    const std::size_t nps = elapsed_ms ? (nodes * std::chrono::milliseconds(std::chrono::seconds(1)).count() / elapsed_ms) : nodes;
+
+    std::cout << std::endl;
+    std::cout << "Nodes: " << nodes << std::endl;
+    std::cout << "Time: " << elapsed_ms << "ms" << std::endl;
+    std::cout << "NPS: " << nps << std::endl;
+    return;
+  }
+
   std::cout << get_perft_info(position, depth) << std::endl;
 }
 
