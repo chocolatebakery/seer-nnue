@@ -18,6 +18,7 @@
 #include <search/move_orderer.h>
 
 #include <algorithm>
+#include <limits>
 
 namespace search {
 
@@ -35,7 +36,14 @@ move_orderer_stepper& move_orderer_stepper::initialize(const move_orderer_data& 
   const history::context ctxt{data.follow, data.counter, data.threatened, data.pawn_hash};
 
   end_ = std::transform(list.begin(), list.end(), entries_.begin(), [&data, &ctxt](const chess::move& mv) {
-    if (mv.is_noisy()) { return move_orderer_entry::make_noisy(mv, data.bd->see_gt(mv, 0), data.hh->compute_value(ctxt, mv)); }
+    if (mv.is_noisy()) {
+      const bool blast_mate = data.bd->is_atomic_king_blast_capture(mv);
+      const bool positive_noisy = blast_mate ? true : data.bd->see_gt(mv, 0);
+      const std::int32_t hist = data.hh->compute_value(ctxt, mv);
+      const std::int32_t value =
+          blast_mate ? std::numeric_limits<std::int32_t>::max() : (positive_noisy ? mv.mvv_lva_key<std::int32_t>() : hist);
+      return move_orderer_entry(mv, positive_noisy, false, value);
+    }
     return move_orderer_entry::make_quiet(mv, data.killer, data.hh->compute_value(ctxt, mv));
   });
 

@@ -153,6 +153,47 @@ inline bool king_capturable_in_position(const board& bd) noexcept {
 
 }  // namespace
 
+square_set board::capture_blast(const square& center) noexcept { return king_attack_tbl.look_up(center) | square_set(center.bit_board()); }
+
+bool board::is_atomic_king_blast_capture(const move& mv) const noexcept {
+  if (!(mv.is_capture() || mv.is_enpassant())) { return false; }
+  // explosion (and king blast detection) is always centred on the destination square
+  const square center = mv.to();
+  const square_set blast = capture_blast(center);
+  return (blast & man_.them(turn()).king()).any();
+}
+
+template <color c>
+inline bool has_atomic_blast_capture_(const board& bd) noexcept {
+  const square_set enemy_king = bd.man_.them<c>().king();
+  if (!enemy_king.any()) { return false; }
+  const square_set king_zone = explosion_mask(enemy_king.item());
+  square_set targets = king_zone & bd.man_.them<c>().all();
+  const square_set our_king = bd.man_.us<c>().king();
+  const square_set occ = bd.man_.white.all() | bd.man_.black.all();
+
+  while (targets.any()) {
+    const square t = targets.item();
+    targets = square_set(targets.data & (targets.data - static_cast<square::data_type>(1)));
+    if ((explosion_mask(t) & our_king).any()) { continue; }
+    if (attack_to<c>(bd, t, occ).any()) { return true; }
+  }
+  return false;
+}
+
+bool board::has_atomic_blast_capture() const noexcept {
+  return turn() ? has_atomic_blast_capture_<color::white>(*this) : has_atomic_blast_capture_<color::black>(*this);
+}
+
+bool board::has_atomic_blast_capture_for(const color side) const noexcept {
+  return side == color::white ? has_atomic_blast_capture_<color::white>(*this) : has_atomic_blast_capture_<color::black>(*this);
+}
+
+bool board::in_atomic_blast_check() const noexcept {
+  const color them = turn() ? color::black : color::white;
+  return has_atomic_blast_capture_for(them);
+}
+
 template <typename T>
 constexpr T material_value(const piece_type& pt) {
   constexpr std::array<T, 6> values = {100, 300, 300, 450, 900, std::numeric_limits<T>::max()};
@@ -819,8 +860,8 @@ inline bool board::is_legal_(const move& mv) const noexcept {
 
   // Captures that would explode our own king are illegal, even if the enemy king also dies
   if (mv.is_capture() || mv.is_enpassant()) {
-    const square center = mv.is_enpassant() ? mv.enpassant_sq() : mv.to();
-    const square_set blast = explosion_mask(center);
+    // Explosion is centred on the destination square (also for en-passant)
+    const square_set blast = explosion_mask(mv.to());
     if ((blast & man_.us<c>().king()).any()) { return false; }
   }
 
@@ -1093,8 +1134,7 @@ board board::forward_(const move& mv) const noexcept {
   if (mv.from() == castle_info<c>.ooo_rook) { copy.lat_.us<c>().set_ooo(false); }
 
   if (mv.is_capture() || mv.is_enpassant()) {
-    const square center = mv.is_enpassant() ? mv.enpassant_sq() : mv.to();
-
+    // Explosion is centred on the destination square even for en-passant
     if (mv.is_enpassant()) {
       copy.man_.them<c>().remove_piece(piece_type::pawn, mv.enpassant_sq());
     } else {
@@ -1103,7 +1143,7 @@ board board::forward_(const move& mv) const noexcept {
 
     copy.man_.us<c>().remove_piece(placed_piece, mv.to());
 
-    const square_set blast = explosion_mask(center);
+    const square_set blast = explosion_mask(mv.to());
     for (const auto sq : (blast & copy.man_.white.knight())) { copy.man_.white.remove_piece(piece_type::knight, sq); }
     for (const auto sq : (blast & copy.man_.white.bishop())) { copy.man_.white.remove_piece(piece_type::bishop, sq); }
     for (const auto sq : (blast & copy.man_.white.rook())) { copy.man_.white.remove_piece(piece_type::rook, sq); }
@@ -1285,6 +1325,7 @@ std::ostream& operator<<(std::ostream& ostr, const board& bd) noexcept {
 
 template chess::move_list chess::board::generate_moves<chess::generation_mode::all>() const noexcept;
 template chess::move_list chess::board::generate_moves<chess::generation_mode::noisy_and_check>() const noexcept;
+template chess::move_list chess::board::generate_moves<chess::generation_mode::quiet_and_check>() const noexcept;
 
 template bool chess::board::is_legal<chess::generation_mode::all>(const chess::move&) const noexcept;
 template bool chess::board::is_legal<chess::generation_mode::noisy_and_check>(const chess::move&) const noexcept;

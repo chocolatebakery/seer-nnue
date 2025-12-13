@@ -183,6 +183,13 @@ struct board {
 
   [[nodiscard]] bool has_non_pawn_material() const noexcept;
 
+  // atomic helpers
+  [[nodiscard]] static square_set capture_blast(const square& center) noexcept;
+  [[nodiscard]] bool is_atomic_king_blast_capture(const move& mv) const noexcept;
+  [[nodiscard]] bool has_atomic_blast_capture() const noexcept;
+  [[nodiscard]] bool has_atomic_blast_capture_for(const color side) const noexcept;
+  [[nodiscard]] bool in_atomic_blast_check() const noexcept;
+
   template <color c>
   [[nodiscard]] inline bool is_passed_push_(const move& mv) const noexcept;
   [[nodiscard]] bool is_passed_push(const move& mv) const noexcept;

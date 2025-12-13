@@ -27,7 +27,7 @@ inline evaluate_info search_worker::evaluate(
     nnue::eval_node& eval_node,
     const chess::board& bd,
     const std::optional<transposition_table_entry>& maybe) noexcept {
-  const bool is_check = bd.is_check();
+  const bool is_check = bd.is_check() || bd.in_atomic_blast_check();
 
   const eval_cache_entry entry = [&] {
     constexpr zobrist::hash_type default_hash = zobrist::hash_type{};
@@ -84,6 +84,8 @@ score_type search_worker::q_search(
   if (!bd.man_.us(bd.turn()).king().any()) { return ss.loss_score(); }
   if (!bd.man_.them(bd.turn()).king().any()) { return ss.win_score(); }
   const bool is_check = bd.is_check();
+  const bool atomic_check = bd.in_atomic_blast_check();
+  const bool is_check_any = is_check || atomic_check;
 
   if (bd.is_trivially_drawn()) { return draw_score; }
   if (ss.upcoming_cycle_exists(bd)) {
@@ -101,7 +103,7 @@ score_type search_worker::q_search(
 
   const auto [feature_hash, static_value, value] = evaluate<is_pv, use_tt>(ss, eval_node, bd, maybe);
 
-  if (!is_check && value >= beta) { return value; }
+  if (!is_check_any && value >= beta) { return value; }
   if (ss.reached_max_height()) { return value; }
 
   move_orderer<chess::generation_mode::noisy_and_check> orderer(move_orderer_data(&bd, &internal.hh.us(bd.turn())));
@@ -117,16 +119,22 @@ score_type search_worker::q_search(
     ++legal_count;
     if (!internal.keep_going()) { break; }
 
-    if (!is_check && !bd.see_ge(mv, 0)) { break; }
+    const bool blast_mate = bd.is_atomic_king_blast_capture(mv);
 
-    const bool delta_prune = !is_pv && !is_check && !bd.see_gt(mv, 0) && ((value + external.constants->delta_margin()) < alpha);
+    if (!is_check_any && !bd.see_ge(mv, 0) && !blast_mate) { break; }
+
+    const bool delta_prune =
+        !is_pv && !is_check_any && !blast_mate && !bd.see_gt(mv, 0) && ((value + external.constants->delta_margin()) < alpha);
     if (delta_prune) { break; }
 
-    const bool good_capture_prune = !is_pv && !is_check && !maybe.has_value() && bd.see_ge(mv, external.constants->good_capture_prune_see_margin()) &&
+    const bool good_capture_prune = !is_pv && !is_check_any && !blast_mate && !maybe.has_value() &&
+                                    bd.see_ge(mv, external.constants->good_capture_prune_see_margin()) &&
                                     value + external.constants->good_capture_prune_score_margin() > beta;
     if (good_capture_prune) { return beta; }
 
     ss.set_played(mv);
+
+    if (blast_mate) { return ss.win_score(); }
 
     const chess::board bd_ = bd.forward(mv);
     external.tt->prefetch(bd_.hash());
@@ -147,7 +155,77 @@ score_type search_worker::q_search(
     if (best_score >= beta) { break; }
   }
 
-  if (legal_count == 0 && is_check) { return ss.loss_score(); }
+  // Promotion quiescence: include quiet under-promotions/pushes that are otherwise skipped by noisy move gen
+  if (!is_check_any && best_score < beta && elevation == 0 && best_score + 100 >= alpha && internal.keep_going()) {
+    constexpr int promo_limit = 6;
+    int explored_promos = 0;
+
+    const chess::move_list quiets = bd.generate_moves<chess::generation_mode::quiet_and_check>();
+    for (const auto& mv : quiets) {
+      if (!mv.is_promotion() || mv.is_noisy()) { continue; }
+      if (explored_promos >= promo_limit) { break; }
+
+      ++explored_promos;
+      const chess::board bd_promo = bd.forward(mv);
+
+      ss.set_played(mv);
+      const score_type score = -q_search<is_pv, use_tt>(ss.next(), eval_node, bd_promo, -beta, -alpha, elevation + 1);
+
+      if (score > best_score) {
+        best_score = score;
+        if (score > alpha) {
+          if (score < beta) { alpha = score; }
+          if constexpr (is_pv) { ss.prepend_to_pv(mv); }
+        }
+      }
+
+      if (best_score >= beta || !internal.keep_going()) { break; }
+    }
+  }
+
+  // Threat quiescence: explore a few quiets that create an immediate blast-mate threat
+  // Only at the first qsearch level (elevation == 0) and if we are near the window
+  if (!is_check_any && best_score < beta && elevation == 0 && best_score + 100 >= alpha && internal.keep_going()) {
+    constexpr int threat_limit = 6;
+    int explored_threats = 0;
+
+    const chess::square_set enemy_king = bd.man_.them(bd.turn()).king();
+    const chess::square_set king_zone = enemy_king.any() ? chess::board::capture_blast(enemy_king.item()) : chess::square_set{};
+
+    const chess::move_list quiets = bd.generate_moves<chess::generation_mode::quiet_and_check>();
+    for (const auto& mv : quiets) {
+      if (mv.is_noisy()) { continue; }
+      if (explored_threats >= threat_limit) { break; }
+      // Cheap pre-filter: only consider moves that give check or step into the king zone
+      const bool to_in_zone = king_zone.any() && king_zone.is_member(mv.to());
+      if (!to_in_zone && !mv.is_castle_oo<chess::color::white>() && !mv.is_castle_ooo<chess::color::white>() &&
+          !mv.is_castle_oo<chess::color::black>() && !mv.is_castle_ooo<chess::color::black>()) {
+        // generate_moves already ensures legality; we just skip far quiets that don't touch the king zone unless they give check
+        // we have no direct "gives check" flag here, so rely on zone filter
+        if (!to_in_zone) { continue; }
+      }
+
+      const chess::board bd_threat = bd.forward(mv);
+      if (!bd_threat.has_atomic_blast_capture()) { continue; }
+
+      ++explored_threats;
+
+      ss.set_played(mv);
+      const score_type score = -q_search<is_pv, use_tt>(ss.next(), eval_node, bd_threat, -beta, -alpha, elevation + 1);
+
+      if (score > best_score) {
+        best_score = score;
+        if (score > alpha) {
+          if (score < beta) { alpha = score; }
+          if constexpr (is_pv) { ss.prepend_to_pv(mv); }
+        }
+      }
+
+      if (best_score >= beta || !internal.keep_going()) { break; }
+    }
+  }
+
+  if (legal_count == 0 && is_check_any) { return ss.loss_score(); }
   if (legal_count == 0) { return value; }
 
   if (use_tt && internal.keep_going()) {
@@ -187,9 +265,11 @@ pv_search_result_t<is_root> search_worker::pv_search(
 
   // step 2. check if node is terminal
   const bool is_check = bd.is_check();
+  const bool atomic_check = bd.in_atomic_blast_check();
+  const bool is_check_any = is_check || atomic_check;
 
   if (!is_root && bd.is_trivially_drawn()) { return make_result(draw_score, chess::move::null()); }
-  if (!is_root && bd.is_rule50_draw() && (!is_check || bd.generate_moves<chess::generation_mode::all>().size() != 0)) {
+  if (!is_root && bd.is_rule50_draw() && (!is_check_any || bd.generate_moves<chess::generation_mode::all>().size() != 0)) {
     return make_result(draw_score, chess::move::null());
   }
 
@@ -236,10 +316,10 @@ pv_search_result_t<is_root> search_worker::pv_search(
 
   // step 6. add position and static eval to stack
   ss.set_hash(bd.sided_hash()).set_eval(static_value);
-  const bool improving = !is_check && ss.improving();
+  const bool improving = !is_check_any && ss.improving();
   const chess::square_set threatened = bd.them_threat_mask();
 
-  const bool try_razor = !is_pv && !is_check && !ss.has_excluded() && depth <= external.constants->razor_depth() &&
+  const bool try_razor = !is_pv && !is_check_any && !ss.has_excluded() && depth <= external.constants->razor_depth() &&
                          value + external.constants->razor_margin(depth) <= alpha;
 
   if (try_razor) {
@@ -248,7 +328,7 @@ pv_search_result_t<is_root> search_worker::pv_search(
   }
 
   // step 7. static null move pruning
-  const bool snm_prune = !is_pv && !ss.has_excluded() && !is_check && depth <= external.constants->snmp_depth() &&
+  const bool snm_prune = !is_pv && !ss.has_excluded() && !is_check_any && depth <= external.constants->snmp_depth() &&
                          value > beta + external.constants->snmp_margin(improving, threatened.any(), depth) && value > ss.loss_score();
 
   if (snm_prune) {
@@ -257,10 +337,11 @@ pv_search_result_t<is_root> search_worker::pv_search(
   }
 
   // step 8. null move pruning
-  const bool try_nmp = !is_pv && !ss.has_excluded() && !is_check && depth >= external.constants->nmp_depth() && value > beta && ss.nmp_valid() &&
-                       bd.has_non_pawn_material() && (!threatened.any() || depth >= 4) &&
-                       (!maybe.has_value() || (maybe->bound() == bound_type::lower && bd.is_legal<chess::generation_mode::all>(maybe->best_move()) &&
-                                               !bd.see_gt(maybe->best_move(), external.constants->nmp_see_threshold())));
+  const bool try_nmp =
+      !is_pv && !ss.has_excluded() && !is_check_any && depth >= external.constants->nmp_depth() && value > beta && ss.nmp_valid() &&
+      bd.has_non_pawn_material() && (!threatened.any() || depth >= 4) &&
+      (!maybe.has_value() || (maybe->bound() == bound_type::lower && bd.is_legal<chess::generation_mode::all>(maybe->best_move()) &&
+                              !bd.see_gt(maybe->best_move(), external.constants->nmp_see_threshold())));
 
   if (try_nmp) {
     ss.set_played(chess::move::null());
@@ -340,7 +421,9 @@ pv_search_result_t<is_root> search_worker::pv_search(
 
     // step 11. pruning
     if (try_pruning) {
-      const bool lm_prune = !bd_.is_check() && depth <= external.constants->lmp_depth() && idx > external.constants->lmp_count(improving, depth);
+      const bool child_check_any = bd_.is_check() || bd_.in_atomic_blast_check();
+      const bool lm_prune =
+          !child_check_any && depth <= external.constants->lmp_depth() && idx > external.constants->lmp_count(improving, depth);
 
       if (lm_prune) { break; }
 
@@ -415,13 +498,18 @@ pv_search_result_t<is_root> search_worker::pv_search(
       score_type zw_score;
 
       // step 13. late move reductions
-      const bool try_lmr = !is_check && (mv.is_quiet() || !bd.see_ge(mv, 0)) && idx >= 2 && (depth >= external.constants->reduce_depth());
+      const bool try_lmr = !is_check_any && (mv.is_quiet() || !bd.see_ge(mv, 0)) && idx >= 2 && (depth >= external.constants->reduce_depth());
       if (try_lmr) {
         depth_type reduction = external.constants->reduction(depth, idx);
 
         // adjust reduction
+        if (mv.piece() == chess::piece_type::pawn) {
+          const int to_rank = mv.to().index() / 8;
+          const bool near_promo = bd.turn() ? (to_rank == 6) : (to_rank == 1);
+          if (mv.is_promotion() || near_promo) { reduction = 0; }
+        }
         if (improving) { --reduction; }
-        if (bd_.is_check()) { --reduction; }
+        if (bd_.is_check() || bd_.in_atomic_blast_check()) { --reduction; }
         if (bd.creates_threat(mv)) { --reduction; }
         if (mv == killer) { --reduction; }
 
@@ -463,7 +551,7 @@ pv_search_result_t<is_root> search_worker::pv_search(
     if (best_score >= beta) { break; }
   }
 
-  if (legal_count == 0 && is_check) { return make_result(ss.loss_score(), chess::move::null()); }
+  if (legal_count == 0 && is_check_any) { return make_result(ss.loss_score(), chess::move::null()); }
   if (legal_count == 0) { return make_result(draw_score, chess::move::null()); }
 
   // step 14. update histories if appropriate and maybe insert a new transposition_table_entry
@@ -479,7 +567,7 @@ pv_search_result_t<is_root> search_worker::pv_search(
       ss.set_killer(best_move);
     }
 
-    if (!is_check && best_move.is_quiet()) {
+    if (!is_check_any && best_move.is_quiet()) {
       const score_type error = best_score - static_value;
       internal.correction.us(bd.turn()).update(feature_hash, bound, error, depth);
     }
