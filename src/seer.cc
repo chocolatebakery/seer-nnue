@@ -16,6 +16,7 @@
 */
 
 #include <engine/uci.h>
+#include <seer_datagen_main.h>
 
 #include <iostream>
 #include <string>
@@ -28,6 +29,9 @@ int main(const int argc, const char* argv[]) {
     uci.bench();
     return 0;
   }
+
+  const bool run_datagen = (argc >= 2) && (std::string(argv[1]) == "datagen");
+  if (run_datagen) { return seer_datagen_main(argc - 1, argv + 1); }
 
   for (std::string line{}; !uci.should_quit() && std::getline(std::cin, line);) { uci.read(line); }
 }

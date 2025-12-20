@@ -9,11 +9,13 @@ CXXSRC += $(wildcard ../src/*.cc )
 CXXSRC += $(wildcard ../src/search/*.cc)
 CXXSRC += $(wildcard ../src/chess/*.cc)
 CXXSRC += $(wildcard ../src/engine/*.cc)
+CXXSRC += $(wildcard ../tools/*.cc)
 CXXSRC += ../syzygy/tbprobe.cc
 
 INCLUDE = ../include
 INCBIN = ../incbin
 SYZYGY = ../syzygy
+TOOLS = ../tools
 
 BASECXXFLAGS += -std=c++$(CXXSTANDARD)
 BASECXXFLAGS += -O3 -g -DNDEBUG -march=native -mtune=native -fopenmp
@@ -27,6 +29,7 @@ CPPFLAGS += -MMD
 CPPFLAGS += -I$(INCLUDE)
 CPPFLAGS += -I$(INCBIN)
 CPPFLAGS += -I$(SYZYGY)
+CPPFLAGS += -I$(TOOLS)
 
 LDFLAGS = -lpthread
 

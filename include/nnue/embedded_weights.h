@@ -24,7 +24,11 @@
 namespace nnue::embed {
 
 extern "C" {
+#if defined(NNUE_EMBEDDED_WEIGHTS_EXTERN)
+INCBIN_EXTERN(weights_file);
+#else
 INCBIN(weights_file, EVALFILE);
+#endif
 }
 
 }  // namespace nnue::embed
