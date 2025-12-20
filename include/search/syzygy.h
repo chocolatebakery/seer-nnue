@@ -19,7 +19,6 @@
 
 #include <chess/board.h>
 #include <search/search_constants.h>
-#include <tbprobe.h>
 
 #include <string>
 
@@ -32,12 +31,7 @@ struct tb_wdl_result {
   wdl_type wdl{wdl_type::draw};
 
   [[nodiscard]] static constexpr tb_wdl_result failure() noexcept { return tb_wdl_result{false}; }
-  [[nodiscard]] static constexpr tb_wdl_result from_value(const unsigned int& value) noexcept {
-    if (value == TB_WIN) { return tb_wdl_result{true, wdl_type::win}; }
-    if (value == TB_DRAW) { return tb_wdl_result{true, wdl_type::draw}; }
-    if (value == TB_LOSS) { return tb_wdl_result{true, wdl_type::loss}; }
-    return failure();
-  }
+  [[nodiscard]] static constexpr tb_wdl_result from_wdl(const wdl_type& w) noexcept { return tb_wdl_result{true, w}; }
 };
 
 struct tb_dtz_result {
