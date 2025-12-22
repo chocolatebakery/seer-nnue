@@ -75,6 +75,8 @@ struct atomic_data_generator {
   std::size_t min_pieces_{0};
   double require_capture_prob_{0.0};
   atomic_filter_preset filter_{atomic_filter_preset::balanced};
+  bool quiet_filter_enabled_{true};
+  bool allow_mate_in_one_{false};
   std::uint64_t seed_{1};
   std::uint64_t progress_every_{0};
 
@@ -130,6 +132,16 @@ struct atomic_data_generator {
 
   atomic_data_generator& set_filter(const atomic_filter_preset& filter) {
     filter_ = filter;
+    return *this;
+  }
+
+  atomic_data_generator& set_quiet_filter_enabled(const bool& enabled) {
+    quiet_filter_enabled_ = enabled;
+    return *this;
+  }
+
+  atomic_data_generator& set_allow_mate_in_one(const bool& allow) {
+    allow_mate_in_one_ = allow;
     return *this;
   }
 
@@ -257,7 +269,7 @@ struct atomic_data_generator {
                 }
               }
 
-              if (!mate_in_one) {
+              if (!mate_in_one || allow_mate_in_one_) {
                 const bool direct_check = state.is_check();
                 const bool atomic_check = state.in_atomic_blast_check();
                 const bool has_capture = !captures.empty();
@@ -266,7 +278,7 @@ struct atomic_data_generator {
                 const bool require_contact = (require_capture_prob_ > 0.0) && (prob_dist(gen) < require_capture_prob_);
 
                 bool accept = !require_contact || contact;
-                if (accept && filter_ == atomic_filter_preset::quiet) {
+                if (accept && filter_ == atomic_filter_preset::quiet && quiet_filter_enabled_) {
                   accept = false;
                   if (!direct_check && !atomic_check) {
                     const auto view = search::stack_view::root((worker->internal).stack);

@@ -27,6 +27,25 @@ Exemplo:
 seer datagen --out out.bin --format bin --samples 500000 --epd seeds.epd --threads 4
 ```
 
+## rescore
+
+Rescore reescreve um .bin com novos valores, mantendo as features.
+
+Exemplo:
+
+```bash
+seer datagen rescore --in data.bin --out data_rescore.bin --mode search --nodes 200000 --threads 8
+```
+
+Opcoes principais:
+- `--mode search|tb|tb_or_search` (default: search)
+- `--nodes N` (default: 200000)
+- `--depth N` (0 = disable)
+- `--threads N`
+- `--progress N` (0 = disable)
+- `--tb-path PATH`
+- `--tb-pieces 6`
+
 ## filtros e variedade
 
 Presets:
@@ -38,6 +57,11 @@ Opcionais:
 - `--require-capture-prob X` (0..1) exige contacto (check/capture) com probabilidade X.
 - `--min-pieces N` evita finais cedo.
 - `--dedup N` ou `--dedup-hash-mb M` para dedup simples.
+- `--eval-limit N` (default 6144) define o corte de score para terminar o jogo.
+- `--fixed-depth N` (default 6) limita a depth por jogada.
+- `--fixed-nodes N` (default 5120) limita os nodes por jogada.
+- `--allow-mate-in-one` aceita posicoes com mate em 1.
+- `--no-quiet-filter` desliga o filtro quiet do preset `quiet`.
 
 ## conversao bin -> txt
 
