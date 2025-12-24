@@ -972,13 +972,18 @@ inline bool board::see_ge_(const move& mv, const T& threshold) const noexcept {
   auto gain_capture = [&](const move& m) -> score_t {
     score_t score{0};
     square_set from_to = square_set::of(m.to(), m.from());
+    square explosion_center = m.to();
+
     if (m.is_enpassant()) {
-      from_to = square_set::of(m.from());
+      // En passant: explosion is centered on the captured pawn's square, not on m.to()
+      // The capturing pawn also explodes at m.to()
+      explosion_center = pawn_push_tbl<opponent<c>>.look_up(m.to(), square_set{}).item();
+      from_to = square_set::of(m.to());  // Only the destination (capturing pawn) explodes
       score += value(piece_type::pawn);
     }
 
     const square_set pawns_all = man_.white.pawn() | man_.black.pawn();
-    const square_set boom = (explosion_mask(m.to()) & ~pawns_all) | from_to;
+    const square_set boom = (explosion_mask(explosion_center) & ~pawns_all) | from_to;
 
     if ((boom & man_.us<us>().king()).any()) { return -score_mate; }
     if ((boom & man_.them<us>().king()).any()) { return score_mate; }
@@ -1134,8 +1139,11 @@ board board::forward_(const move& mv) const noexcept {
   if (mv.from() == castle_info<c>.ooo_rook) { copy.lat_.us<c>().set_ooo(false); }
 
   if (mv.is_capture() || mv.is_enpassant()) {
-    // Explosion is centred on the destination square even for en-passant
+    // For en passant, explosion is centred on the captured pawn's square, not mv.to()
+    square explosion_center = mv.to();
+
     if (mv.is_enpassant()) {
+      explosion_center = mv.enpassant_sq();
       copy.man_.them<c>().remove_piece(piece_type::pawn, mv.enpassant_sq());
     } else {
       copy.man_.them<c>().remove_piece(mv.captured(), mv.to());
@@ -1143,7 +1151,7 @@ board board::forward_(const move& mv) const noexcept {
 
     copy.man_.us<c>().remove_piece(placed_piece, mv.to());
 
-    const square_set blast = explosion_mask(mv.to());
+    const square_set blast = explosion_mask(explosion_center);
     for (const auto sq : (blast & copy.man_.white.knight())) { copy.man_.white.remove_piece(piece_type::knight, sq); }
     for (const auto sq : (blast & copy.man_.white.bishop())) { copy.man_.white.remove_piece(piece_type::bishop, sq); }
     for (const auto sq : (blast & copy.man_.white.rook())) { copy.man_.white.remove_piece(piece_type::rook, sq); }

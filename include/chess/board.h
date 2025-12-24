@@ -273,15 +273,58 @@ struct board {
       return h_ka::index<pov, p>(our_king, on_to, mv.to());
     }();
 
-    if (mv.is_capture()) {
-      const std::size_t erase_idx_1 = h_ka::index<pov, opponent<p>>(our_king, mv.captured(), mv.to());
-      sided_set.template us<pov>().copy_parent_insert_erase_erase(insert_idx, erase_idx_0, erase_idx_1);
-      return;
-    }
+    if (mv.is_capture() || mv.is_enpassant()) {
+      // In atomic chess, captures cause explosions
+      // We need to use the forward function result to get all affected pieces
+      const board after = forward_<p>(mv);
 
-    if (mv.is_enpassant()) {
-      const std::size_t erase_idx_1 = h_ka::index<pov, opponent<p>>(our_king, piece_type::pawn, mv.enpassant_sq());
-      sided_set.template us<pov>().copy_parent_insert_erase_erase(insert_idx, erase_idx_0, erase_idx_1);
+      // Start with parent state
+      sided_set.template us<pov>().copy_parent();
+
+      // Remove the moving piece from origin
+      sided_set.template us<pov>().erase(erase_idx_0);
+
+      // Check all piece types and squares to find what changed
+      over_types([&](const piece_type& pt) {
+        // Check white pieces
+        for (const auto sq : man_.white.get_plane(pt)) {
+          if (!after.man_.white.get_plane(pt).is_member(sq)) {
+            // This piece was removed by explosion
+            const color piece_color = color::white;
+            const std::size_t idx = h_ka::index<pov, piece_color>(our_king, pt, sq);
+            sided_set.template us<pov>().erase(idx);
+          }
+        }
+
+        // Check black pieces
+        for (const auto sq : man_.black.get_plane(pt)) {
+          if (!after.man_.black.get_plane(pt).is_member(sq)) {
+            // This piece was removed by explosion
+            const color piece_color = color::black;
+            const std::size_t idx = h_ka::index<pov, piece_color>(our_king, pt, sq);
+            sided_set.template us<pov>().erase(idx);
+          }
+        }
+
+        // Check white pieces that were added (shouldn't happen in explosions, but for completeness)
+        for (const auto sq : after.man_.white.get_plane(pt)) {
+          if (!man_.white.get_plane(pt).is_member(sq)) {
+            const color piece_color = color::white;
+            const std::size_t idx = h_ka::index<pov, piece_color>(our_king, pt, sq);
+            sided_set.template us<pov>().insert(idx);
+          }
+        }
+
+        // Check black pieces that were added (shouldn't happen in explosions, but for completeness)
+        for (const auto sq : after.man_.black.get_plane(pt)) {
+          if (!man_.black.get_plane(pt).is_member(sq)) {
+            const color piece_color = color::black;
+            const std::size_t idx = h_ka::index<pov, piece_color>(our_king, pt, sq);
+            sided_set.template us<pov>().insert(idx);
+          }
+        }
+      });
+
       return;
     }
 
