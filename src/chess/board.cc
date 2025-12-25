@@ -157,8 +157,18 @@ square_set board::capture_blast(const square& center) noexcept { return king_att
 
 bool board::is_atomic_king_blast_capture(const move& mv) const noexcept {
   if (!(mv.is_capture() || mv.is_enpassant())) { return false; }
-  // explosion (and king blast detection) is always centred on the destination square
-  const square center = mv.to();
+
+  // For en passant, explosion is centered on the captured pawn's square, not mv.to()
+  const square center = [&] {
+    if (mv.is_enpassant()) {
+      // Calculate the square of the captured pawn (one rank back from destination)
+      return turn()
+        ? pawn_push_tbl<color::black>.look_up(mv.to(), square_set{}).item()
+        : pawn_push_tbl<color::white>.look_up(mv.to(), square_set{}).item();
+    }
+    return mv.to();
+  }();
+
   const square_set blast = capture_blast(center);
   return (blast & man_.them(turn()).king()).any();
 }
@@ -963,96 +973,115 @@ inline bool board::see_ge_(const move& mv, const T& threshold) const noexcept {
   if (mv.is_null()) { return true; }
 
   const color us = c;
-  const square_set occ_before = man_.white.all() | man_.black.all();
   const score_t thr = static_cast<score_t>(threshold);
 
   const bool is_capture = mv.is_capture() || mv.is_enpassant();
   const bool is_castle = mv.is_castle_oo<c>() || mv.is_castle_ooo<c>();
 
-  auto gain_capture = [&](const move& m) -> score_t {
+  // CAPTURES: In atomic chess, captures cause explosions
+  if (is_capture && !is_castle) {
     score_t score{0};
-    square_set from_to = square_set::of(m.to(), m.from());
-    square explosion_center = m.to();
+    square explosion_center = mv.to();
+    square_set pieces_exploded = square_set::of(mv.to());  // Capturing piece always explodes
 
-    if (m.is_enpassant()) {
-      // En passant: explosion is centered on the captured pawn's square, not on m.to()
-      // The capturing pawn also explodes at m.to()
-      explosion_center = pawn_push_tbl<opponent<c>>.look_up(m.to(), square_set{}).item();
-      from_to = square_set::of(m.to());  // Only the destination (capturing pawn) explodes
+    if (mv.is_enpassant()) {
+      // En passant: explosion is centered on the captured pawn's square
+      explosion_center = pawn_push_tbl<opponent<c>>.look_up(mv.to(), square_set{}).item();
+      // Gain the captured pawn
       score += value(piece_type::pawn);
+    } else {
+      // Normal capture: gain the captured piece (it's at mv.to())
+      score += value(mv.captured());
     }
 
+    // Calculate explosion area (center + 8 adjacent squares), excluding pawns
     const square_set pawns_all = man_.white.pawn() | man_.black.pawn();
-    const square_set boom = (explosion_mask(explosion_center) & ~pawns_all) | from_to;
+    const square_set explosion_area = explosion_mask(explosion_center) & ~pawns_all;
 
-    if ((boom & man_.us<us>().king()).any()) { return -score_mate; }
-    if ((boom & man_.them<us>().king()).any()) { return score_mate; }
+    // All non-pawn pieces in explosion area are removed, plus the capturing piece
+    const square_set boom = explosion_area | pieces_exploded;
 
+    // Check if kings die in the explosion
+    if ((boom & man_.us<us>().king()).any()) { return -score_mate >= thr; }
+    if ((boom & man_.them<us>().king()).any()) { return score_mate >= thr; }
+
+    // Calculate material gain/loss from explosion
     square_set boom_us = boom & man_.us<us>().all();
     square_set boom_them = boom & man_.them<us>().all();
 
     for (const auto sq : boom_us) { score -= value(piece_at_unchecked(*this, sq)); }
     for (const auto sq : boom_them) { score += value(piece_at_unchecked(*this, sq)); }
 
-    return score;
-  };
+    return score >= thr;
+  }
 
-  if (is_capture && !is_castle) { return gain_capture(mv) - 1 >= thr; }
+  // QUIET MOVES and CASTLING: No explosions in atomic chess for non-captures
+  // For quiet moves, SEE is trivial - we just check if the move loses material to a recapture
 
-  // Quiet / castling evaluation
-  const square_set pawns_all = man_.white.pawn() | man_.black.pawn();
-  const square_set from_to = square_set::of(mv.to(), mv.from());
-  const square_set boom = (explosion_mask(mv.to()) & ~pawns_all) | (from_to & occ_before);
+  // Castling is always safe in terms of material (no piece is lost)
+  if (is_castle) { return 0 >= thr; }
 
-  square_set our_pieces = man_.us<us>().all();
-  square_set their_pieces = man_.them<us>().all();
+  // For quiet moves, the piece just moves from 'from' to 'to'
+  // The only risk is if the opponent can capture it on 'to'
 
-  square_set boom_us = boom & our_pieces;
-  square_set boom_them = boom & their_pieces;
-
-  if ((boom & man_.us<us>().king()).any()) { return (thr <= -score_mate); }
-  if ((boom & man_.them<us>().king()).any()) { return (score_mate >= thr); }
-
-  score_t result{0};
-
-  // occupancy after move (use forward for correctness in castling)
+  // Calculate position after the quiet move
   const board next = forward_<c>(mv);
   const square_set occ_after = next.man_.white.all() | next.man_.black.all();
 
-  // least valuable attacker once
+  // Check if opponent can capture on mv.to()
   square_set attackers = attack_to<opponent<c>>(next, mv.to(), occ_after);
-  score_t min_attacker = score_mate;
-  while (attackers.any()) {
-    const square sq = attackers.item();
-    attackers = square_set(attackers.data & (attackers.data - static_cast<square::data_type>(1)));
+
+  if (!attackers.any()) {
+    // No attacker, move is safe
+    return 0 >= thr;
+  }
+
+  // Find the least valuable attacker
+  score_t min_attacker_value = score_mate;
+  for (const auto sq : attackers) {
     const piece_type pt = piece_at_unchecked(next, sq);
-    if (pt == piece_type::king) { continue; }
-    const bool in_boom = boom.is_member(sq);
-    const score_t v = in_boom ? 0 : value(pt);
-    if (v < min_attacker) { min_attacker = v; }
-  }
-  if (min_attacker != score_mate) { result += min_attacker; }
-
-  const square_set our_ring = king_ring<c>(*this);
-  const square_set their_ring = king_ring<opponent<c>>(*this);
-
-  for (const auto sq : boom_us) {
-    score_t v = value(piece_at_unchecked(*this, sq));
-    if (our_ring.is_member(sq)) { v *= 4; }
-    result -= v;
+    if (pt == piece_type::king) { continue; }  // Kings can't capture in atomic
+    const score_t v = value(pt);
+    if (v < min_attacker_value) { min_attacker_value = v; }
   }
 
-  for (const auto sq : boom_them) {
-    score_t v = value(piece_at_unchecked(*this, sq));
-    if (their_ring.is_member(sq)) { v *= 3; }
-    result += v;
+  if (min_attacker_value == score_mate) {
+    // Only king can attack, which can't capture in atomic
+    return 0 >= thr;
   }
 
-  if (our_ring.any() && (boom & our_ring).any()) {
-    if (immediate_indirect_kill<opponent<c>>(*this, occ_after, our_ring)) { result -= score_mate / 2; }
+  // If opponent captures our piece on mv.to(), there will be an explosion
+  // The opponent loses their attacking piece, we lose our moved piece
+  // Plus any pieces in the explosion radius (excluding pawns)
+
+  const piece_type our_moved_piece = mv.is_promotion<c>() ? mv.promotion() : mv.piece();
+  score_t result = -value(our_moved_piece);  // We lose our piece
+  result += min_attacker_value;  // Opponent loses their attacker
+
+  // Calculate explosion if opponent recaptures
+  const square_set pawns_all_after = next.man_.white.pawn() | next.man_.black.pawn();
+  const square_set explosion_area = explosion_mask(mv.to()) & ~pawns_all_after;
+  const square_set boom = explosion_area | square_set::of(mv.to());  // Attacker also explodes
+
+  // Check if recapture would kill our king
+  if ((boom & next.man_.us<c>().king()).any()) {
+    // Opponent can kill our king by recapturing
+    return -score_mate >= thr;
   }
 
-  if (result > 0) { result = 0; }
+  // Check if recapture would kill opponent's king
+  if ((boom & next.man_.them<c>().king()).any()) {
+    // Opponent can't recapture because it would kill their own king
+    return 0 >= thr;
+  }
+
+  // Add/subtract pieces lost in the explosion
+  square_set boom_us = boom & next.man_.us<c>().all();
+  square_set boom_them = boom & next.man_.them<c>().all();
+
+  for (const auto sq : boom_us) { result -= value(piece_at_unchecked(next, sq)); }
+  for (const auto sq : boom_them) { result += value(piece_at_unchecked(next, sq)); }
+
   return result >= thr;
 }
 
