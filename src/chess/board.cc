@@ -870,8 +870,12 @@ inline bool board::is_legal_(const move& mv) const noexcept {
 
   // Captures that would explode our own king are illegal, even if the enemy king also dies
   if (mv.is_capture() || mv.is_enpassant()) {
-    // Explosion is centred on the destination square (also for en-passant)
-    const square_set blast = explosion_mask(mv.to());
+    // For en passant, explosion is centered on the captured pawn's square
+    const square explosion_center = mv.is_enpassant()
+      ? pawn_push_tbl<opponent<c>>.look_up(mv.to(), square_set{}).item()
+      : mv.to();
+
+    const square_set blast = explosion_mask(explosion_center);
     if ((blast & man_.us<c>().king()).any()) { return false; }
   }
 
@@ -1178,19 +1182,35 @@ board board::forward_(const move& mv) const noexcept {
       copy.man_.them<c>().remove_piece(mv.captured(), mv.to());
     }
 
+    // Remove the capturing piece from its destination
     copy.man_.us<c>().remove_piece(placed_piece, mv.to());
 
+    // Calculate explosion area: center + 8 adjacent squares (but NOT pawns)
     const square_set blast = explosion_mask(explosion_center);
-    for (const auto sq : (blast & copy.man_.white.knight())) { copy.man_.white.remove_piece(piece_type::knight, sq); }
-    for (const auto sq : (blast & copy.man_.white.bishop())) { copy.man_.white.remove_piece(piece_type::bishop, sq); }
-    for (const auto sq : (blast & copy.man_.white.rook())) { copy.man_.white.remove_piece(piece_type::rook, sq); }
-    for (const auto sq : (blast & copy.man_.white.queen())) { copy.man_.white.remove_piece(piece_type::queen, sq); }
-    for (const auto sq : (blast & copy.man_.white.king())) { copy.man_.white.remove_piece(piece_type::king, sq); }
-    for (const auto sq : (blast & copy.man_.black.knight())) { copy.man_.black.remove_piece(piece_type::knight, sq); }
-    for (const auto sq : (blast & copy.man_.black.bishop())) { copy.man_.black.remove_piece(piece_type::bishop, sq); }
-    for (const auto sq : (blast & copy.man_.black.rook())) { copy.man_.black.remove_piece(piece_type::rook, sq); }
-    for (const auto sq : (blast & copy.man_.black.queen())) { copy.man_.black.remove_piece(piece_type::queen, sq); }
-    for (const auto sq : (blast & copy.man_.black.king())) { copy.man_.black.remove_piece(piece_type::king, sq); }
+
+    // Explicitly copy piece sets before iterating to avoid any iterator issues
+    const square_set white_knights_in_blast = blast & copy.man_.white.knight();
+    const square_set white_bishops_in_blast = blast & copy.man_.white.bishop();
+    const square_set white_rooks_in_blast = blast & copy.man_.white.rook();
+    const square_set white_queens_in_blast = blast & copy.man_.white.queen();
+    const square_set white_kings_in_blast = blast & copy.man_.white.king();
+    const square_set black_knights_in_blast = blast & copy.man_.black.knight();
+    const square_set black_bishops_in_blast = blast & copy.man_.black.bishop();
+    const square_set black_rooks_in_blast = blast & copy.man_.black.rook();
+    const square_set black_queens_in_blast = blast & copy.man_.black.queen();
+    const square_set black_kings_in_blast = blast & copy.man_.black.king();
+
+    // Remove all non-pawn pieces in blast area
+    for (const auto sq : white_knights_in_blast) { copy.man_.white.remove_piece(piece_type::knight, sq); }
+    for (const auto sq : white_bishops_in_blast) { copy.man_.white.remove_piece(piece_type::bishop, sq); }
+    for (const auto sq : white_rooks_in_blast) { copy.man_.white.remove_piece(piece_type::rook, sq); }
+    for (const auto sq : white_queens_in_blast) { copy.man_.white.remove_piece(piece_type::queen, sq); }
+    for (const auto sq : white_kings_in_blast) { copy.man_.white.remove_piece(piece_type::king, sq); }
+    for (const auto sq : black_knights_in_blast) { copy.man_.black.remove_piece(piece_type::knight, sq); }
+    for (const auto sq : black_bishops_in_blast) { copy.man_.black.remove_piece(piece_type::bishop, sq); }
+    for (const auto sq : black_rooks_in_blast) { copy.man_.black.remove_piece(piece_type::rook, sq); }
+    for (const auto sq : black_queens_in_blast) { copy.man_.black.remove_piece(piece_type::queen, sq); }
+    for (const auto sq : black_kings_in_blast) { copy.man_.black.remove_piece(piece_type::king, sq); }
   }
 
   if (copy.lat_.white.oo() && !copy.man_.white.rook().is_member(castle_info<color::white>.oo_rook)) { copy.lat_.white.set_oo(false); }
