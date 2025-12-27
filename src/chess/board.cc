@@ -1172,45 +1172,80 @@ board board::forward_(const move& mv) const noexcept {
   if (mv.from() == castle_info<c>.ooo_rook) { copy.lat_.us<c>().set_ooo(false); }
 
   if (mv.is_capture() || mv.is_enpassant()) {
-    // For en passant, explosion is centred on the captured pawn's square, not mv.to()
-    square explosion_center = mv.to();
+    // ATOMIC CHESS EXPLOSION LOGIC
+    // In atomic chess, captures cause explosions that remove pieces
+    // We handle this entirely through direct bitboard manipulation to avoid
+    // inconsistencies with hash/all_ fields that would occur if we mixed
+    // remove_piece() calls with direct bitboard operations.
 
+    // Determine explosion center
+    square explosion_center = mv.to();
     if (mv.is_enpassant()) {
       explosion_center = mv.enpassant_sq();
-      copy.man_.them<c>().remove_piece(piece_type::pawn, mv.enpassant_sq());
-    } else {
-      copy.man_.them<c>().remove_piece(mv.captured(), mv.to());
     }
 
-    // Remove the capturing piece from its destination
-    copy.man_.us<c>().remove_piece(placed_piece, mv.to());
-
-    // Calculate explosion area: center + 8 adjacent squares (but NOT pawns)
+    // Calculate explosion area: center + 8 adjacent squares (king attack pattern)
     const square_set blast = explosion_mask(explosion_center);
+    const square_set blast_center = square_set::of(explosion_center);
 
-    // Explicitly copy piece sets before iterating to avoid any iterator issues
-    const square_set white_knights_in_blast = blast & copy.man_.white.knight();
-    const square_set white_bishops_in_blast = blast & copy.man_.white.bishop();
-    const square_set white_rooks_in_blast = blast & copy.man_.white.rook();
-    const square_set white_queens_in_blast = blast & copy.man_.white.queen();
-    const square_set white_kings_in_blast = blast & copy.man_.white.king();
-    const square_set black_knights_in_blast = blast & copy.man_.black.knight();
-    const square_set black_bishops_in_blast = blast & copy.man_.black.bishop();
-    const square_set black_rooks_in_blast = blast & copy.man_.black.rook();
-    const square_set black_queens_in_blast = blast & copy.man_.black.queen();
-    const square_set black_kings_in_blast = blast & copy.man_.black.king();
+    // STEP 1: Remove captured piece from bitboards
+    // (already at explosion center for normal captures, at enpassant_sq for en passant)
+    if (mv.is_enpassant()) {
+      copy.man_.them<c>().pawn_ &= ~square_set::of(mv.enpassant_sq());
+    } else {
+      copy.man_.them<c>().get_plane(mv.captured()) &= ~square_set::of(mv.to());
+    }
 
-    // Remove all non-pawn pieces in blast area
-    for (const auto sq : white_knights_in_blast) { copy.man_.white.remove_piece(piece_type::knight, sq); }
-    for (const auto sq : white_bishops_in_blast) { copy.man_.white.remove_piece(piece_type::bishop, sq); }
-    for (const auto sq : white_rooks_in_blast) { copy.man_.white.remove_piece(piece_type::rook, sq); }
-    for (const auto sq : white_queens_in_blast) { copy.man_.white.remove_piece(piece_type::queen, sq); }
-    for (const auto sq : white_kings_in_blast) { copy.man_.white.remove_piece(piece_type::king, sq); }
-    for (const auto sq : black_knights_in_blast) { copy.man_.black.remove_piece(piece_type::knight, sq); }
-    for (const auto sq : black_bishops_in_blast) { copy.man_.black.remove_piece(piece_type::bishop, sq); }
-    for (const auto sq : black_rooks_in_blast) { copy.man_.black.remove_piece(piece_type::rook, sq); }
-    for (const auto sq : black_queens_in_blast) { copy.man_.black.remove_piece(piece_type::queen, sq); }
-    for (const auto sq : black_kings_in_blast) { copy.man_.black.remove_piece(piece_type::king, sq); }
+    // STEP 2: Remove capturing piece from destination (it explodes)
+    copy.man_.us<c>().get_plane(placed_piece) &= ~square_set::of(mv.to());
+
+    // STEP 3: Remove all non-pawn pieces in blast radius from BOTH colors
+    copy.man_.white.knight_ &= ~blast;
+    copy.man_.white.bishop_ &= ~blast;
+    copy.man_.white.rook_ &= ~blast;
+    copy.man_.white.queen_ &= ~blast;
+    copy.man_.white.king_ &= ~blast;
+
+    copy.man_.black.knight_ &= ~blast;
+    copy.man_.black.bishop_ &= ~blast;
+    copy.man_.black.rook_ &= ~blast;
+    copy.man_.black.queen_ &= ~blast;
+    copy.man_.black.king_ &= ~blast;
+
+    // STEP 4: Remove pawns ONLY from the explosion center (not adjacent squares)
+    // Note: captured pawn and capturing pawn already removed in steps 1&2
+    copy.man_.white.pawn_ &= ~blast_center;
+    copy.man_.black.pawn_ &= ~blast_center;
+
+    // STEP 5: Recompute 'all' bitboards from individual piece bitboards
+    copy.man_.white.all_ = copy.man_.white.pawn_ | copy.man_.white.knight_ | copy.man_.white.bishop_ |
+                           copy.man_.white.rook_ | copy.man_.white.queen_ | copy.man_.white.king_;
+    copy.man_.black.all_ = copy.man_.black.pawn_ | copy.man_.black.knight_ | copy.man_.black.bishop_ |
+                           copy.man_.black.rook_ | copy.man_.black.queen_ | copy.man_.black.king_;
+
+    // STEP 6: Recompute hashes from scratch
+    copy.man_.white.hash_ = 0;
+    copy.man_.white.pawn_hash_ = 0;
+    copy.man_.black.hash_ = 0;
+    copy.man_.black.pawn_hash_ = 0;
+
+    over_types([&](const piece_type pt) {
+      for (const auto sq : copy.man_.white.get_plane(pt)) {
+        copy.man_.white.hash_ ^= sided_manifest::w_manifest_src.get(pt, sq);
+        if (pt == piece_type::pawn) {
+          copy.man_.white.pawn_hash_ ^= sided_manifest::w_manifest_src.get(pt, sq);
+        }
+      }
+    });
+
+    over_types([&](const piece_type pt) {
+      for (const auto sq : copy.man_.black.get_plane(pt)) {
+        copy.man_.black.hash_ ^= sided_manifest::b_manifest_src.get(pt, sq);
+        if (pt == piece_type::pawn) {
+          copy.man_.black.pawn_hash_ ^= sided_manifest::b_manifest_src.get(pt, sq);
+        }
+      }
+    });
   }
 
   if (copy.lat_.white.oo() && !copy.man_.white.rook().is_member(castle_info<color::white>.oo_rook)) { copy.lat_.white.set_oo(false); }
