@@ -13,14 +13,18 @@
 
 ## Explosoes (capturas)
 - Explosao so ocorre em capturas (incluindo promocoes e en passant).
-- Centro da explosao e a casa da peca capturada; em en passant e a casa do peao que avancou duas casas.
-- Area afetada: casa capturada + 8 casas adjacentes (mascara de rei).
+- Centro da explosao e SEMPRE a casa de destino (mv.to()) para TODAS as capturas, incluindo en passant.
+  - Em capturas normais: centro = casa de destino (onde esta a peca capturada).
+  - Em en passant: centro = casa de destino (onde o peao capturador vai), NAO a casa do peao capturado.
+- Area afetada: casa de destino + 8 casas adjacentes (mascara de rei).
 - Remocoes:
   - A peca capturadora sempre explode (mesmo peoes e em en passant).
   - Todas as pecas nao-peoes na area de explosao sao removidas (torres, cavalos, bispos, damas e reis).
-  - Peoes so saem se estiverem na casa capturada; peoes em casas adjacentes sobrevivem.
+  - Peoes so saem se estiverem EXATAMENTE na casa de destino (centro da explosao); peoes em casas adjacentes sobrevivem.
+  - Em en passant: o peao capturado e removido da sua casa original (mv.enpassant_sq()), e o peao capturador explode na casa de destino.
 - Casas vazias nao importam; a casa de origem ja esta vazia e nao explode.
-- Se a explosao eliminar o proprio rei o lance e ilegal; se eliminar o rei adversario, o lance e valido e encerra a partida.
+- Se a explosao eliminar o proprio rei o lance e ilegal, MESMO QUE o rei adversario tambem morra na explosao (nao se pode sacrificar o proprio rei).
+- Se eliminar apenas o rei adversario (sem atingir o proprio rei), o lance e valido e encerra a partida com vitoria.
 - Direitos de roque sao perdidos se uma torre na casa original for destruida pela explosao.
 
 ## Legalidade e "xeque" atomico
@@ -32,7 +36,7 @@
 
 ## Movimentos especiais
 - Roque: requer torre na casa de origem e casas de passagem livres. Nao pode rocar sob captura imediata do adversario e cada passo do rei e testado contra explosoes possiveis; se algum passo deixaria o rei explodivel o roque e ilegal. Reis podem atravessar casas adjacentes ao rei inimigo.
-- En passant: alvo definido apos avanco duplo. A explosao usa a casa do peao capturado; a peca capturadora tambem explode na casa de destino. Peoes adjacentes nao explodem. Ilegal se o rei de quem captura explodir; vitoria se o rei adversario explodir.
+- En passant: alvo definido apos avanco duplo. A explosao e centrada na casa de destino (onde o peao capturador vai), NAO na casa do peao capturado. O peao capturado e removido da sua casa original. A peca capturadora explode na casa de destino. Peoes adjacentes ao centro da explosao nao explodem. Ilegal se o rei de quem captura explodir; vitoria se o rei adversario explodir.
 - Promocoes: apenas para dama, torre, bispo ou cavalo; promocoes de captura usam a mesma logica de explosao.
 - Avanco duplo de peao e atualizacao do halfmove seguem o xadrez padrao (reseta em capturas ou movimento de peao).
 
