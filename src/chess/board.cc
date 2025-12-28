@@ -870,12 +870,8 @@ inline bool board::is_legal_(const move& mv) const noexcept {
 
   // Captures that would explode our own king are illegal, even if the enemy king also dies
   if (mv.is_capture() || mv.is_enpassant()) {
-    // For en passant, explosion is centered on the captured pawn's square
-    const square explosion_center = mv.is_enpassant()
-      ? pawn_push_tbl<opponent<c>>.look_up(mv.to(), square_set{}).item()
-      : mv.to();
-
-    const square_set blast = explosion_mask(explosion_center);
+    // In atomic chess, ALL captures (including en passant) have explosion centered on mv.to()
+    const square_set blast = explosion_mask(mv.to());
     if ((blast & man_.us<c>().king()).any()) { return false; }
   }
 
@@ -985,13 +981,12 @@ inline bool board::see_ge_(const move& mv, const T& threshold) const noexcept {
   // CAPTURES: In atomic chess, captures cause explosions
   if (is_capture && !is_castle) {
     score_t score{0};
-    square explosion_center = mv.to();
+    // In atomic chess, ALL captures (including en passant) have explosion centered on mv.to()
+    const square explosion_center = mv.to();
     square_set pieces_exploded = square_set::of(mv.to());  // Capturing piece always explodes
 
     if (mv.is_enpassant()) {
-      // En passant: explosion is centered on the captured pawn's square
-      explosion_center = pawn_push_tbl<opponent<c>>.look_up(mv.to(), square_set{}).item();
-      // Gain the captured pawn
+      // En passant: gain the captured pawn (it's at a different square than mv.to())
       score += value(piece_type::pawn);
     } else {
       // Normal capture: gain the captured piece (it's at mv.to())
@@ -1179,10 +1174,9 @@ board board::forward_(const move& mv) const noexcept {
     // remove_piece() calls with direct bitboard operations.
 
     // Determine explosion center
+    // In atomic chess, explosions are centered on mv.to() for ALL captures,
+    // including en passant. The captured piece (even if not at mv.to()) is removed separately.
     square explosion_center = mv.to();
-    if (mv.is_enpassant()) {
-      explosion_center = mv.enpassant_sq();
-    }
 
     // Calculate explosion area: center + 8 adjacent squares (king attack pattern)
     const square_set blast = explosion_mask(explosion_center);
@@ -1214,8 +1208,12 @@ board board::forward_(const move& mv) const noexcept {
 
     // STEP 4: Remove pawns ONLY from the explosion center (not adjacent squares)
     // Note: captured pawn and capturing pawn already removed in steps 1&2
-    copy.man_.white.pawn_ &= ~blast_center;
-    copy.man_.black.pawn_ &= ~blast_center;
+    // For en passant, both pawns are already removed (captured at enpassant_sq, capturing at mv.to())
+    // so we only need to remove additional pawns from blast_center for normal captures
+    if (!mv.is_enpassant()) {
+      copy.man_.white.pawn_ &= ~blast_center;
+      copy.man_.black.pawn_ &= ~blast_center;
+    }
 
     // STEP 5: Recompute 'all' bitboards from individual piece bitboards
     copy.man_.white.all_ = copy.man_.white.pawn_ | copy.man_.white.knight_ | copy.man_.white.bishop_ |
