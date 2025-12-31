@@ -97,8 +97,40 @@ result_type get_result(const chess::board_history& hist, const state_type& state
   if (has_repetition(hist, state)) { return result_type::draw; }
   if (!state.man_.us(state.turn()).king().any()) { return result_type::loss; }
   if (!state.man_.them(state.turn()).king().any()) { return result_type::win; }
-  if (state.generate_moves().size() == 0) { return result_type::draw; }
+
+  // Check for checkmate (in check with no legal moves) vs stalemate (not in check with no legal moves)
+  if (state.generate_moves().size() == 0) {
+    if (state.is_check()) {
+      return result_type::loss;  // Checkmate: side to move loses
+    } else {
+      return result_type::draw;  // Stalemate: draw
+    }
+  }
+
   return result_type::draw;
+}
+
+// Adjudicate result using score when game reaches move limit without terminal position
+result_type get_result_with_adjudication(const chess::board_history& hist, const state_type& state, const score_type& final_score) {
+  // First check for explicit terminal conditions
+  result_type terminal_result = get_result(hist, state);
+
+  // If result is not draw (i.e., game ended with mate/explosion/repetition), use that
+  if (terminal_result != result_type::draw) {
+    return terminal_result;
+  }
+
+  // Game reached move limit without terminal position
+  // Adjudicate based on final score
+  constexpr score_type adjudication_threshold = 1000;  // ~10 pawns advantage
+
+  if (final_score >= adjudication_threshold) {
+    return result_type::win;   // Side to move is winning
+  } else if (final_score <= -adjudication_threshold) {
+    return result_type::loss;  // Side to move is losing
+  } else {
+    return result_type::draw;  // Position is balanced, adjudicate as draw
+  }
 }
 
 result_type relative_result(const bool& pov_a, const bool& pov_b, const result_type& result){

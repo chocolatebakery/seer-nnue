@@ -235,6 +235,7 @@ struct atomic_data_generator {
                                                   ? lo
                                                   : std::uniform_int_distribution<search::depth_type>(lo, hi)(gen);
 
+        score_type final_score = 0;  // Track final score for adjudication
         const result_type game_result = [&] {
           for (search::depth_type ply = 0; ply <= ply_limit_ && !is_terminal(hist, state); ++ply) {
             if (ply < random_ply) {
@@ -253,9 +254,10 @@ struct atomic_data_generator {
 
             const auto best_move = worker->best_move();
             const auto best_score = worker->score();
+            final_score = best_score;  // Save score for adjudication
 
-            if (best_score >= eval_limit_) { return result_type::win; }
-            if (best_score <= -eval_limit_) { return result_type::loss; }
+            // In atomic chess, eval_limit_ check is removed - let games play out naturally
+            // High scores (mate scores) should result in actual checkmate, not early termination
 
             const bool has_kings = kings_present(state);
             const bool enough_pieces = min_pieces_ == 0 || state.num_pieces() >= min_pieces_;
@@ -311,7 +313,7 @@ struct atomic_data_generator {
             state = state.forward(best_move);
           }
 
-          return get_result(hist, state);
+          return get_result_with_adjudication(hist, state, final_score);
         }();
 
         for (auto& elem : block) { elem.set_result(relative_result(state.turn(), elem.pov(), game_result)); }
