@@ -169,10 +169,12 @@ score_type search_worker::q_search(
       const chess::board bd_promo = bd.forward(mv);
 
       ss.set_played(mv);
-      const score_type score = -q_search<is_pv, use_tt>(ss.next(), eval_node, bd_promo, -beta, -alpha, elevation + 1);
+      nnue::eval_node eval_node_promo = eval_node.dirty_child(&internal.reset_cache, &bd, mv);
+      const score_type score = -q_search<is_pv, use_tt>(ss.next(), eval_node_promo, bd_promo, -beta, -alpha, elevation + 1);
 
       if (score > best_score) {
         best_score = score;
+        best_move = mv;
         if (score > alpha) {
           if (score < beta) { alpha = score; }
           if constexpr (is_pv) { ss.prepend_to_pv(mv); }
@@ -211,10 +213,12 @@ score_type search_worker::q_search(
       ++explored_threats;
 
       ss.set_played(mv);
-      const score_type score = -q_search<is_pv, use_tt>(ss.next(), eval_node, bd_threat, -beta, -alpha, elevation + 1);
+      nnue::eval_node eval_node_threat = eval_node.dirty_child(&internal.reset_cache, &bd, mv);
+      const score_type score = -q_search<is_pv, use_tt>(ss.next(), eval_node_threat, bd_threat, -beta, -alpha, elevation + 1);
 
       if (score > best_score) {
         best_score = score;
+        best_move = mv;
         if (score > alpha) {
           if (score < beta) { alpha = score; }
           if constexpr (is_pv) { ss.prepend_to_pv(mv); }
