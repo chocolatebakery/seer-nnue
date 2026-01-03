@@ -1015,73 +1015,66 @@ inline bool board::see_ge_(const move& mv, const T& threshold) const noexcept {
   }
 
   // QUIET MOVES and CASTLING: No explosions in atomic chess for non-captures
-  // For quiet moves, SEE is trivial - we just check if the move loses material to a recapture
+  // Following Fairy-Stockfish approach: calculate minimum attacker + explosion damage
 
   // Castling is always safe in terms of material (no piece is lost)
   if (is_castle) { return 0 >= thr; }
 
-  // For quiet moves, the piece just moves from 'from' to 'to'
-  // The only risk is if the opponent can capture it on 'to'
-
-  // Calculate position after the quiet move
+  // For quiet moves: calculate like Fairy-Stockfish
   const board next = forward_<c>(mv);
   const square_set occ_after = next.man_.white.all() | next.man_.black.all();
 
-  // Check if opponent can capture on mv.to()
+  // Get all opponent pieces that can attack mv.to()
   square_set attackers = attack_to<opponent<c>>(next, mv.to(), occ_after);
 
   if (!attackers.any()) {
-    // No attacker, move is safe
+    // No attacker on mv.to() - but check for other dangerous blast captures
+    if (next.has_atomic_blast_capture()) {
+      // Opponent has other blast captures - be pessimistic (Fairy approach)
+      return 0 >= thr;
+    }
     return 0 >= thr;
   }
 
-  // Find the least valuable attacker
+  // Find the least valuable attacker (like Fairy does)
+  // CRITICAL: If attacker is in blast radius, it explodes anyway, so value = 0 (Fairy logic)
+  const square_set blast_radius = explosion_mask(mv.to());
   score_t min_attacker_value = score_mate;
   for (const auto sq : attackers) {
     const piece_type pt = piece_at_unchecked(next, sq);
-    if (pt == piece_type::king) { continue; }  // Kings can't capture in atomic
-    const score_t v = value(pt);
+    if (pt == piece_type::king) { continue; }
+    // Fairy: "blast & s ? VALUE_ZERO : CapturePieceValue[MG][piece_on(s)]"
+    const score_t v = blast_radius.is_member(sq) ? 0 : value(pt);
     if (v < min_attacker_value) { min_attacker_value = v; }
   }
 
   if (min_attacker_value == score_mate) {
-    // Only king can attack, which can't capture in atomic
+    // Only king can attack
     return 0 >= thr;
   }
 
-  // If opponent captures our piece on mv.to(), there will be an explosion
-  // The opponent loses their attacking piece, we lose our moved piece
-  // Plus any pieces in the explosion radius (excluding pawns)
-
+  // Calculate recapture result
   const piece_type our_moved_piece = mv.is_promotion<c>() ? mv.promotion() : mv.piece();
-  score_t result = -value(our_moved_piece);  // We lose our piece
-  result += min_attacker_value;  // Opponent loses their attacker
+  score_t result = -value(our_moved_piece) + min_attacker_value;
 
-  // Calculate explosion if opponent recaptures
+  // Add explosion damage
   const square_set pawns_all_after = next.man_.white.pawn() | next.man_.black.pawn();
   const square_set explosion_area = explosion_mask(mv.to()) & ~pawns_all_after;
-  const square_set boom = explosion_area | square_set::of(mv.to());  // Attacker also explodes
+  const square_set boom = explosion_area | square_set::of(mv.to());
 
-  // Check if recapture would kill our king
-  if ((boom & next.man_.us<c>().king()).any()) {
-    // Opponent can kill our king by recapturing
-    return -score_mate >= thr;
-  }
-
-  // Check if recapture would kill opponent's king
+  if ((boom & next.man_.us<c>().king()).any()) { return -score_mate >= thr; }
   if ((boom & next.man_.them<c>().king()).any()) {
-    // Opponent can't recapture because it would kill their own king
+    // Recapture would kill opponent's king - check for other captures
+    if (next.has_atomic_blast_capture()) { return 0 >= thr; }
     return 0 >= thr;
   }
 
-  // Add/subtract pieces lost in the explosion
-  square_set boom_us = boom & next.man_.us<c>().all();
-  square_set boom_them = boom & next.man_.them<c>().all();
+  // Explosion material
+  for (const auto sq : boom & next.man_.us<c>().all()) { result -= value(piece_at_unchecked(next, sq)); }
+  for (const auto sq : boom & next.man_.them<c>().all()) { result += value(piece_at_unchecked(next, sq)); }
 
-  for (const auto sq : boom_us) { result -= value(piece_at_unchecked(next, sq)); }
-  for (const auto sq : boom_them) { result += value(piece_at_unchecked(next, sq)); }
-
-  return result >= thr;
+  // Fairy returns std::min(result, 0) - cap at zero for quiet moves
+  return (result > 0 ? 0 : result) >= thr;
 }
 
 template <typename T>
