@@ -983,7 +983,6 @@ inline bool board::see_ge_(const move& mv, const T& threshold) const noexcept {
     score_t score{0};
     // In atomic chess, ALL captures (including en passant) have explosion centered on mv.to()
     const square explosion_center = mv.to();
-    square_set pieces_exploded = square_set::of(mv.to());  // Capturing piece always explodes
 
     if (mv.is_enpassant()) {
       // En passant: gain the captured pawn (it's at a different square than mv.to())
@@ -993,12 +992,20 @@ inline bool board::see_ge_(const move& mv, const T& threshold) const noexcept {
       score += value(mv.captured());
     }
 
-    // Calculate explosion area (center + 8 adjacent squares), excluding pawns
+    // Calculate explosion area (center + 8 adjacent squares)
+    // In atomic: all non-pawn pieces in blast radius explode
+    // Pawns ONLY explode if at exact center, not adjacent squares
+    const square_set blast_radius = explosion_mask(explosion_center);
+    const square_set blast_center = square_set::of(explosion_center);
     const square_set pawns_all = man_.white.pawn() | man_.black.pawn();
-    const square_set explosion_area = explosion_mask(explosion_center) & ~pawns_all;
 
-    // All non-pawn pieces in explosion area are removed, plus the capturing piece
-    const square_set boom = explosion_area | pieces_exploded;
+    // Remove all non-pawn pieces from blast radius
+    const square_set boom_non_pawns = blast_radius & ~pawns_all;
+
+    // Add pawns ONLY from center (not adjacent)
+    const square_set boom_pawns = blast_center & pawns_all;
+
+    const square_set boom = boom_non_pawns | boom_pawns;
 
     // Check if kings die in the explosion
     if ((boom & man_.us<us>().king()).any()) { return -score_mate >= thr; }
@@ -1058,9 +1065,20 @@ inline bool board::see_ge_(const move& mv, const T& threshold) const noexcept {
   score_t result = -value(our_moved_piece) + min_attacker_value;
 
   // Add explosion damage
+  // In atomic: all non-pawn pieces in blast radius explode
+  // Pawns ONLY explode if at exact center (mv.to()), not adjacent squares
+  const square_set blast_radius = explosion_mask(mv.to());
+  const square_set blast_center = square_set::of(mv.to());
+  const square_set blast_adjacent = blast_radius & ~blast_center;
+
+  // Remove all non-pawn pieces from blast radius
   const square_set pawns_all_after = next.man_.white.pawn() | next.man_.black.pawn();
-  const square_set explosion_area = explosion_mask(mv.to()) & ~pawns_all_after;
-  const square_set boom = explosion_area | square_set::of(mv.to());
+  const square_set boom_non_pawns = blast_radius & ~pawns_all_after;
+
+  // Add pawns ONLY from center (not adjacent)
+  const square_set boom_pawns = blast_center & pawns_all_after;
+
+  const square_set boom = boom_non_pawns | boom_pawns;
 
   if ((boom & next.man_.us<c>().king()).any()) { return -score_mate >= thr; }
   if ((boom & next.man_.them<c>().king()).any()) {
