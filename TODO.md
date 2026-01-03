@@ -177,6 +177,67 @@ const square_set blast = explosion_masks[mv.to().index()];
 
 ---
 
+### 6. **Ajustes de Search para Atomic Chess** ⭐⭐ (Médio impacto)
+
+**Problema**: Parâmetros de search (futility pruning, etc.) estão tuneados para xadrez clássico
+**Solução**: Ajustar parâmetros baseando-se em Fairy-Stockfish
+
+**Fonte**: Fairy-Stockfish ajusta vários parâmetros para variantes explosivas:
+
+#### 6.1 Futility Pruning Depth
+```cpp
+// Fairy-Stockfish (search.cpp)
+if (!PvNode
+    && depth < 9 - 3 * pos.blast_on_capture()  // Para atomic: depth < 6
+    && eval - futility_margin(...) >= beta
+    && eval < VALUE_KNOWN_WIN)
+    return eval;
+```
+
+**Análise**:
+- Fairy reduz depth threshold de **9 para 6** em atomic (33% redução)
+- Seer atual: `futility_prune_depth()` retorna **5** (já conservador)
+- **Conclusão**: Seer já é mais conservador que o Fairy atomic (5 vs 6)
+- **Ação**: Manter depth=5 por enquanto, testar depth=6 se necessário
+
+#### 6.2 Futility Move Count
+```cpp
+// Fairy-Stockfish
+int futilityMoveCount = (3 + depth * depth) / (2 + pos.blast_on_capture());
+// Para atomic: divide por 2 (metade dos moves considerados)
+```
+
+**Seer atual**: Não tem limitação de move count em futility pruning (usa margem fixa)
+
+**Abordagem**:
+- Implementar move count limit similar ao Fairy
+- Testar se melhora playing strength
+
+#### 6.3 Outras Possíveis Adaptações
+- **Null Move Pruning**: Fairy pode ajustar depth reduction para atomic
+- **Late Move Reductions**: Podem precisar de ajustes para capturas explosivas
+- **Extensions**: Capturas que removem várias peças podem merecer extension
+
+**Complexidade**: MÉDIA
+- Requer testing extensivo para validar melhoria
+- Mudanças localizadas em `search_worker.cc`
+- Baixo risco de bugs (apenas tuning)
+
+**Ganho estimado**: 5-15% de playing strength (depende de tuning)
+
+**Arquivos afetados**:
+- `src/search/search_worker.cc` (linhas 434-437 e outras)
+- `include/search/search_constants.h` (linhas 85+)
+
+**⚠️ Nota**: Fazer DEPOIS de NNUE estar treinado
+- Requer baseline estável para medir melhorias
+- Interação com NNUE pode afetar resultados
+- Tuning de search é processo iterativo (requer muitos testes)
+
+**Prioridade**: MÉDIA-ALTA (mas apenas após Fase 1 completa)
+
+---
+
 ## 📊 Roadmap de Implementação
 
 ### Fase 1: Treino NNUE (ATUAL) 🎯
@@ -201,7 +262,16 @@ const square_set blast = explosion_masks[mv.to().index()];
 
 **Ganho esperado**: 40-60% de speedup total
 
-### Fase 4: Advanced (Futuro distante)
+### Fase 4: Search Tuning (Após NNUE treinado)
+1. ✅ Benchmark baseline com NNUE treinado
+2. ✅ Testar ajustes de futility pruning (depth 5 vs 6)
+3. ✅ Implementar futility move count limit (opcional)
+4. ✅ Testar outras adaptações (null move, LMR, extensions)
+5. ✅ Validar com torneios (1000+ games vs Fairy-Stockfish)
+
+**Ganho esperado**: 5-15% de playing strength
+
+### Fase 5: Advanced (Futuro distante)
 **Tempo estimado**: Várias semanas
 1. ⚠️ Reestruturar NNUE updates para capturas
 2. ⚠️ Considerar SIMD para operações de bitboard
