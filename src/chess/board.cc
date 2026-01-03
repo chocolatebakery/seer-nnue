@@ -1067,7 +1067,6 @@ inline bool board::see_ge_(const move& mv, const T& threshold) const noexcept {
   // Add explosion damage
   // In atomic: all non-pawn pieces in blast radius explode
   // Pawns ONLY explode if at exact center (mv.to()), not adjacent squares
-  blast_radius = explosion_mask(mv.to());
   const square_set blast_center = square_set::of(mv.to());
   const square_set blast_adjacent = blast_radius & ~blast_center;
 
