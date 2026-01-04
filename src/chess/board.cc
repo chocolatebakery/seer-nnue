@@ -978,120 +978,117 @@ inline bool board::see_ge_(const move& mv, const T& threshold) const noexcept {
   const bool is_capture = mv.is_capture() || mv.is_enpassant();
   const bool is_castle = mv.is_castle_oo<c>() || mv.is_castle_ooo<c>();
 
-  // CAPTURES: In atomic chess, captures cause explosions
-  if (is_capture && !is_castle) {
-    score_t score{0};
-    // In atomic chess, ALL captures (including en passant) have explosion centered on mv.to()
-    const square explosion_center = mv.to();
+  // Following Fairy-Stockfish blast_see() implementation
+  const square to = mv.to();
+  const square from = mv.from();
 
-    if (mv.is_enpassant()) {
-      // En passant: gain the captured pawn (it's at a different square than mv.to())
-      score += value(piece_type::pawn);
-    } else {
-      // Normal capture: gain the captured piece (it's at mv.to())
-      score += value(mv.captured());
+  // Calculate blast bitboard: (king attacks around 'to' excluding pawns) | from | to
+  // Fairy: Bitboard blast = ((attacks_bb<KING>(to) & ~pieces(PAWN)) | fromto) & pieces
+  const square_set king_attacks = explosion_mask(to);
+  const square_set pawns_all = man_.white.pawn() | man_.black.pawn();
+  const square_set all_pieces = man_.white.all() | man_.black.all();
+
+  // Non-pawn pieces in king attack radius + from square + to square
+  square_set blast = (king_attacks & ~pawns_all) | square_set::of(from) | square_set::of(to);
+  blast &= all_pieces;  // Only pieces that actually exist
+
+  score_t result = 0;
+
+  // CAPTURES: Just sum up blast damage
+  if (is_capture) {
+    // Sum up blast piece values (Fairy lines 36-47)
+    bool our_king_dies = false;
+    bool their_king_dies = false;
+
+    for (const auto sq : blast) {
+      const piece_type pt = piece_at_unchecked(*this, sq);
+      const bool is_ours = man_.us<us>().all().is_member(sq);
+
+      if (pt == piece_type::king) {
+        if (is_ours) { our_king_dies = true; }
+        else { their_king_dies = true; }
+      }
+
+      // Add/subtract piece values
+      result += is_ours ? -value(pt) : value(pt);
     }
 
-    // Calculate explosion area (center + 8 adjacent squares)
-    // In atomic: all non-pawn pieces in blast radius explode
-    // Pawns ONLY explode if at exact center, not adjacent squares
-    const square_set blast_radius = explosion_mask(explosion_center);
-    const square_set blast_center = square_set::of(explosion_center);
-    const square_set pawns_all = man_.white.pawn() | man_.black.pawn();
+    // Check extinction (king deaths) - Fairy lines 63-67
+    if (our_king_dies) { return -score_mate >= thr; }
+    if (their_king_dies) { return score_mate >= thr; }
 
-    // Remove all non-pawn pieces from blast radius
-    const square_set boom_non_pawns = blast_radius & ~pawns_all;
+    // Fairy line 69: "capture(m) ? result - 1 : ..."
+    // The -1 is a tiebreaker, we'll just return result
 
-    // Add pawns ONLY from center (not adjacent)
-    const square_set boom_pawns = blast_center & pawns_all;
+    // DEBUG: Uncomment to see SEE values for captures
+    // std::cerr << "SEE(" << mv << ") = " << result << " (thr=" << thr << ")" << std::endl;
 
-    const square_set boom = boom_non_pawns | boom_pawns;
-
-    // Check if kings die in the explosion
-    if ((boom & man_.us<us>().king()).any()) { return -score_mate >= thr; }
-    if ((boom & man_.them<us>().king()).any()) { return score_mate >= thr; }
-
-    // Calculate material gain/loss from explosion
-    square_set boom_us = boom & man_.us<us>().all();
-    square_set boom_them = boom & man_.them<us>().all();
-
-    for (const auto sq : boom_us) { score -= value(piece_at_unchecked(*this, sq)); }
-    for (const auto sq : boom_them) { score += value(piece_at_unchecked(*this, sq)); }
-
-    return score >= thr;
+    return result >= thr;
   }
 
-  // QUIET MOVES and CASTLING: No explosions in atomic chess for non-captures
-  // Following Fairy-Stockfish approach: calculate minimum attacker + explosion damage
-
-  // Castling is always safe in terms of material (no piece is lost)
+  // QUIET MOVES: Add least valuable attacker, then sum blast damage
   if (is_castle) { return 0 >= thr; }
 
-  // For quiet moves: calculate like Fairy-Stockfish
+  // Calculate position after our quiet move
   const board next = forward_<c>(mv);
   const square_set occ_after = next.man_.white.all() | next.man_.black.all();
 
-  // Get all opponent pieces that can attack mv.to()
-  square_set attackers = attack_to<opponent<c>>(next, mv.to(), occ_after);
+  // Get opponent attackers to 'to' square (Fairy line 15)
+  square_set attackers = attack_to<opponent<c>>(next, to, occ_after);
 
-  if (!attackers.any()) {
-    // No attacker on mv.to() - but check for other dangerous blast captures
-    if (next.has_atomic_blast_capture()) {
-      // Opponent has other blast captures - be pessimistic (Fairy approach)
-      return 0 >= thr;
-    }
-    return 0 >= thr;
-  }
+  // Find minimum attacker value (Fairy lines 16-23)
+  score_t min_attacker = score_mate;
+  const square_set blast_area = explosion_mask(to);
 
-  // Find the least valuable attacker (like Fairy does)
-  // CRITICAL: If attacker is in blast radius, it explodes anyway, so value = 0 (Fairy logic)
-  const square_set blast_radius = explosion_mask(mv.to());
-  score_t min_attacker_value = score_mate;
   for (const auto sq : attackers) {
     const piece_type pt = piece_at_unchecked(next, sq);
-    if (pt == piece_type::king) { continue; }
-    // Fairy: "blast & s ? VALUE_ZERO : CapturePieceValue[MG][piece_on(s)]"
-    const score_t v = blast_radius.is_member(sq) ? 0 : value(pt);
-    if (v < min_attacker_value) { min_attacker_value = v; }
+    if (pt == piece_type::king) { continue; }  // Kings can't capture
+
+    // Fairy: "blast & s ? VALUE_ZERO : CapturePieceValue[piece_on(s)]"
+    const score_t v = blast_area.is_member(sq) ? 0 : value(pt);
+    if (v < min_attacker) { min_attacker = v; }
   }
 
-  if (min_attacker_value == score_mate) {
-    // Only king can attack
-    return 0 >= thr;
+  // No valid attackers (Fairy lines 25-26)
+  if (min_attacker == score_mate) { return 0 >= thr; }
+
+  // Add min attacker value (Fairy line 28)
+  result = min_attacker;
+
+  // Recalculate blast for the recapture position (from=attacker square, to=to)
+  // For now, we approximate: blast includes pieces around 'to' + the piece we moved
+  const square_set pawns_after = next.man_.white.pawn() | next.man_.black.pawn();
+  square_set recapture_blast = (blast_area & ~pawns_after) | square_set::of(to);
+  recapture_blast &= occ_after;
+
+  // Sum up blast damage (Fairy lines 36-47)
+  bool our_king_dies = false;
+  bool their_king_dies = false;
+
+  for (const auto sq : recapture_blast) {
+    const piece_type pt = piece_at_unchecked(next, sq);
+    const bool is_ours = next.man_.us<c>().all().is_member(sq);
+
+    if (pt == piece_type::king) {
+      if (is_ours) { our_king_dies = true; }
+      else { their_king_dies = true; }
+    }
+
+    result += is_ours ? -value(pt) : value(pt);
   }
 
-  // Calculate recapture result
-  const piece_type our_moved_piece = mv.is_promotion<c>() ? mv.promotion() : mv.piece();
-  score_t result = -value(our_moved_piece) + min_attacker_value;
+  // Extinction handling for quiet moves (Fairy lines 54-59)
+  if (their_king_dies && our_king_dies) { return 0 >= thr; }
+  if (their_king_dies) { return std::min(-score_mate, static_cast<score_t>(0)) >= thr; }
+  if (our_king_dies) { return std::min(score_mate, static_cast<score_t>(0)) >= thr; }
 
-  // Add explosion damage
-  // In atomic: all non-pawn pieces in blast radius explode
-  // Pawns ONLY explode if at exact center (mv.to()), not adjacent squares
-  const square_set blast_center = square_set::of(mv.to());
-  const square_set blast_adjacent = blast_radius & ~blast_center;
+  // Fairy line 69: "!capture(m) ? std::min(result, VALUE_ZERO)"
+  const score_t final_result = std::min(result, static_cast<score_t>(0));
 
-  // Remove all non-pawn pieces from blast radius
-  const square_set pawns_all_after = next.man_.white.pawn() | next.man_.black.pawn();
-  const square_set boom_non_pawns = blast_radius & ~pawns_all_after;
+  // DEBUG: Uncomment to see SEE values for quiet moves
+  //std::cerr << "SEE_quiet(" << mv << ") = " << final_result << " (thr=" << thr << ")" << std::endl;
 
-  // Add pawns ONLY from center (not adjacent)
-  const square_set boom_pawns = blast_center & pawns_all_after;
-
-  const square_set boom = boom_non_pawns | boom_pawns;
-
-  if ((boom & next.man_.us<c>().king()).any()) { return -score_mate >= thr; }
-  if ((boom & next.man_.them<c>().king()).any()) {
-    // Recapture would kill opponent's king - check for other captures
-    if (next.has_atomic_blast_capture()) { return 0 >= thr; }
-    return 0 >= thr;
-  }
-
-  // Explosion material
-  for (const auto sq : boom & next.man_.us<c>().all()) { result -= value(piece_at_unchecked(next, sq)); }
-  for (const auto sq : boom & next.man_.them<c>().all()) { result += value(piece_at_unchecked(next, sq)); }
-
-  // Fairy returns std::min(result, 0) - cap at zero for quiet moves
-  return (result > 0 ? 0 : result) >= thr;
+  return final_result >= thr;
 }
 
 template <typename T>
@@ -1102,6 +1099,65 @@ bool board::see_ge(const move& mv, const T& threshold) const noexcept {
 template <typename T>
 bool board::see_gt(const move& mv, const T& threshold) const noexcept {
   return see_ge(mv, threshold + 1);
+}
+
+template <color c, typename T>
+inline T board::see_value_(const move& mv) const noexcept {
+  using score_t = std::int32_t;
+  constexpr score_t score_mate = 1'000'000;
+
+  static constexpr score_t values[] = {
+      100,   // pawn
+      350,   // knight
+      350,   // bishop
+      525,   // rook
+      1000,  // queen
+      10000  // king (should never be used, but needed for array)
+  };
+
+  auto value = [&](const piece_type pt) -> score_t { return values[static_cast<int>(pt)]; };
+
+  const bool is_capture = mv.is_noisy();
+  if (!is_capture) { return 0; }  // Quiet/castle moves have SEE=0 for ordering
+
+  // Same logic as see_ge_ but return the value instead of comparing to threshold
+  const square to = mv.to();
+  const square from = mv.from();
+
+  const square_set king_attacks = explosion_mask(to);
+  const square_set pawns_all = man_.white.pawn() | man_.black.pawn();
+  const square_set all_pieces = man_.white.all() | man_.black.all();
+
+  square_set blast = (king_attacks & ~pawns_all) | square_set::of(from) | square_set::of(to);
+  blast &= all_pieces;
+
+  score_t result = 0;
+
+  // CAPTURES: Just sum up blast damage
+  bool our_king_dies = false;
+  bool their_king_dies = false;
+
+  for (const auto sq : blast) {
+    const piece_type pt = piece_at_unchecked(*this, sq);
+    const bool is_ours = man_.us<c>().all().is_member(sq);
+
+    if (pt == piece_type::king) {
+      if (is_ours) { our_king_dies = true; }
+      else { their_king_dies = true; }
+    }
+
+    result += is_ours ? -value(pt) : value(pt);
+  }
+
+  if (our_king_dies) { return static_cast<T>(-score_mate); }
+  if (their_king_dies) { return static_cast<T>(score_mate); }
+
+  return static_cast<T>(result);
+}
+
+template <typename T>
+T board::see_value(const move& mv) const noexcept {
+  return turn() ? see_value_<color::white, T>(mv) : see_value_<color::black, T>(mv);
 }
 
 template <typename T>
@@ -1433,6 +1489,7 @@ template bool chess::board::is_legal<chess::generation_mode::noisy_and_check>(co
 
 template bool chess::board::see_ge<std::int32_t>(const chess::move&, const std::int32_t&) const noexcept;
 template bool chess::board::see_gt<std::int32_t>(const chess::move&, const std::int32_t&) const noexcept;
+template std::int32_t chess::board::see_value<std::int32_t>(const chess::move&) const noexcept;
 
 template float chess::board::phase<float>() const noexcept;
 template double chess::board::phase<double>() const noexcept;
