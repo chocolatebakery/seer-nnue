@@ -40,8 +40,20 @@ move_orderer_stepper& move_orderer_stepper::initialize(const move_orderer_data& 
       const bool blast_mate = data.bd->is_atomic_king_blast_capture(mv);
       const bool positive_noisy = blast_mate ? true : data.bd->see_gt(mv, 0);
       const std::int32_t hist = data.hh->compute_value(ctxt, mv);
-      const std::int32_t value =
-          blast_mate ? std::numeric_limits<std::int32_t>::max() : (positive_noisy ? mv.mvv_lva_key<std::int32_t>() : hist);
+
+      // Use SEE as tiebreaker for MVV-LVA: MVV_LVA * 10000 + SEE_value
+      // This ensures that when MVV-LVA is equal (e.g., Nxa2 vs Nxc2), the higher SEE wins
+      std::int32_t value;
+      if (blast_mate) {
+        value = std::numeric_limits<std::int32_t>::max();
+      } else if (positive_noisy) {
+        const std::int32_t mvv_lva = mv.mvv_lva_key<std::int32_t>();
+        const std::int32_t see_val = data.bd->see_value<std::int32_t>(mv);
+        value = mvv_lva * 10000 + see_val;  // SEE as tiebreaker
+      } else {
+        value = hist;
+      }
+
       return move_orderer_entry(mv, positive_noisy, false, value);
     }
     return move_orderer_entry::make_quiet(mv, data.killer, data.hh->compute_value(ctxt, mv));

@@ -178,6 +178,12 @@ struct board {
   template <typename T>
   [[nodiscard]] bool see_gt(const move& mv, const T& threshold) const noexcept;
 
+  template <color c, typename T>
+  [[nodiscard]] inline T see_value_(const move& mv) const noexcept;
+
+  template <typename T>
+  [[nodiscard]] T see_value(const move& mv) const noexcept;
+
   template <typename T>
   [[nodiscard]] T phase() const noexcept;
 
