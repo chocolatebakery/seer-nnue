@@ -2,6 +2,22 @@
   Seer is a UCI chess engine by Connor McMonigle
   Copyright (C) 2021-2023  Connor McMonigle
 
+ * Stormphrax, a UCI chess engine
+ * Copyright (C) 2024 Ciekce
+ *
+ * Stormphrax is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Stormphrax is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Stormphrax. If not, see <https://www.gnu.org/licenses/>.
+
   Seer is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
@@ -21,9 +37,7 @@
 #include <engine/processor/types.h>
 #include <engine/uci.h>
 #include <engine/version.h>
-#include <nnue/embedded_weights.h>
-#include <nnue/weights_exporter.h>
-#include <nnue/weights_streamer.h>
+#include <eval/nnue.h>
 #include <search/search_constants.h>
 #include <search/syzygy.h>
 
@@ -34,24 +48,14 @@
 namespace engine {
 
 auto uci::options() noexcept {
-  auto quantized_weight_path = option_callback(string_option("QuantizedWeights", std::string(embedded_weight_path)), [this](const std::string& path) {
-    if (path == std::string(embedded_weight_path)) {
-      nnue::embedded_weight_streamer embedded(nnue::embed::weights_file_data);
-      weights_.load(embedded);
+  auto eval_file = option_callback(string_option("EvalFile", std::string(embedded_eval_path)), [this](const std::string& path) {
+    if (path == std::string(embedded_eval_path) || path == std::string(string_option::empty)) {
+      eval::loadDefaultNetwork();
+      eval_file_ = std::string(embedded_eval_path);
     } else {
-      weights_.load(path);
+      eval::loadNetwork(path);
+      eval_file_ = path;
     }
-
-    weights_info_string();
-  });
-
-  auto weight_path = option_callback(string_option("Weights", std::string(unused_weight_path)), [this](const std::string& path) {
-    if (path == std::string(unused_weight_path)) { return; }
-
-    nnue::weights raw_weights{};
-    raw_weights.load(path);
-
-    weights_ = raw_weights.to<nnue::quantized_weights>();
     weights_info_string();
   });
 
@@ -68,7 +72,7 @@ auto uci::options() noexcept {
   auto ponder = option_callback(check_option("Ponder", default_ponder), [this](const bool& value) { ponder_.store(value); });
   auto syzygy_path = option_callback(string_option("SyzygyPath", string_option::empty), [](const std::string& path) { search::syzygy::init(path); });
 
-  return uci_options(quantized_weight_path, weight_path, hash_size, thread_count, ponder, syzygy_path);
+  return uci_options(eval_file, hash_size, thread_count, ponder, syzygy_path);
 }
 
 bool uci::should_quit() const noexcept { return should_quit_.load(); }
@@ -94,7 +98,12 @@ void uci::set_position(const chess::board& bd, const std::string& uci_moves) noe
 
 void uci::weights_info_string() noexcept {
   std::lock_guard<std::mutex> lock(mutex_);
-  os << "info string loaded weights with signature 0x" << std::hex << weights_.signature() << std::dec << std::endl;
+  const std::string_view network_name = eval::loadedNetworkName();
+  os << "info string loaded network " << network_name;
+  if (eval_file_ != std::string(embedded_eval_path)) {
+    os << " (" << eval_file_ << ")";
+  }
+  os << std::endl;
 }
 
 void uci::info_string(const search::search_worker& worker) noexcept {
@@ -178,29 +187,29 @@ void uci::bench() noexcept {
   std::lock_guard<std::mutex> lock(mutex_);
   if (orchestrator_.is_searching()) { return; }
 
-  os << get_bench_info(weights_) << std::endl;
+  os << get_bench_info() << std::endl;
 }
 
 void uci::export_weights(const std::string& export_path) noexcept {
   std::lock_guard<std::mutex> lock(mutex_);
   if (orchestrator_.is_searching()) { return; }
 
-  nnue::weights_exporter exporter(export_path);
-  weights_.write(exporter);
+  (void)export_path;
+  os << "info string export not supported for Bullet NNUE" << std::endl;
 }
 
 void uci::eval() noexcept {
   std::lock_guard<std::mutex> lock(mutex_);
   if (orchestrator_.is_searching()) { return; }
 
-  auto scratchpad = std::make_unique<nnue::eval::scratchpad_type>();
-  auto evaluator = nnue::eval(&weights_, scratchpad.get(), 0, 0);
-  position.feature_full_reset(evaluator);
+  constexpr search::score_type nnue_scale_numerator = 1024;
+  constexpr search::score_type nnue_scale_denominator = 288;
 
-  const auto score = evaluator.evaluate(position.turn(), position.phase<nnue::weights::parameter_type>());
+  const chess::color stm = position.turn() ? chess::color::white : chess::color::black;
+  const auto cp_score = eval::NnueState::evaluateOnce(position, stm);
+  const auto raw_score = static_cast<search::score_type>(cp_score) * nnue_scale_numerator / nnue_scale_denominator;
 
-  os << "phase: " << position.phase<nnue::weights::parameter_type>() << std::endl;
-  os << "score(phase): " << score.result << std::endl;
+  os << "score cp " << cp_score << " raw " << raw_score << std::endl;
 }
 
 void uci::probe() noexcept {
@@ -319,7 +328,6 @@ void uci::read(const std::string& line) noexcept {
 
 uci::uci() noexcept
     : orchestrator_(
-          &weights_,
           default_hash_size,
           [this](const auto& worker) {
             info_string(worker);
@@ -328,8 +336,7 @@ uci::uci() noexcept
           [this](const auto& worker) {
             if (manager_.should_stop_on_update(update_info{worker.nodes()})) { stop(); }
           }) {
-  nnue::embedded_weight_streamer embedded(nnue::embed::weights_file_data);
-  weights_.load(embedded);
+  eval::loadDefaultNetwork();
   orchestrator_.resize(default_thread_count);
 }
 

@@ -2,6 +2,22 @@
   Seer is a UCI chess engine by Connor McMonigle
   Copyright (C) 2021-2023  Connor McMonigle
 
+ * Stormphrax, a UCI chess engine
+ * Copyright (C) 2024 Ciekce
+ *
+ * Stormphrax is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Stormphrax is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Stormphrax. If not, see <https://www.gnu.org/licenses/>.
+
   Seer is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
@@ -19,7 +35,6 @@
 
 #include <chess/board.h>
 #include <engine/time_manager.h>
-#include <nnue/eval.h>
 #include <search/search_constants.h>
 #include <search/search_worker.h>
 #include <search/transposition_table.h>
@@ -100,7 +115,7 @@ struct bench_info {
 
 [[maybe_unused]] std::ostream& operator<<(std::ostream& os, const bench_info& info) noexcept;
 
-[[nodiscard]] bench_info get_bench_info(const nnue::quantized_weights& weights) noexcept;
+[[nodiscard]] bench_info get_bench_info() noexcept;
 
 [[nodiscard]] std::size_t perft(const chess::board& bd, const search::depth_type& depth) noexcept;
 [[nodiscard]] bench_info get_perft_info(const chess::board& bd, const search::depth_type& depth) noexcept;

@@ -2,6 +2,22 @@
   Seer is a UCI chess engine by Connor McMonigle
   Copyright (C) 2021-2023  Connor McMonigle
 
+ * Stormphrax, a UCI chess engine
+ * Copyright (C) 2024 Ciekce
+ *
+ * Stormphrax is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Stormphrax is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Stormphrax. If not, see <https://www.gnu.org/licenses/>.
+
   Seer is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
@@ -19,7 +35,6 @@
 
 #include <chess/board.h>
 #include <engine/time_manager.h>
-#include <nnue/weights.h>
 #include <search/search_worker.h>
 #include <search/search_worker_orchestrator.h>
 
@@ -32,8 +47,7 @@
 namespace engine {
 
 struct uci {
-  static constexpr std::string_view embedded_weight_path = "EMBEDDED";
-  static constexpr std::string_view unused_weight_path = "UNUSED";
+  static constexpr std::string_view embedded_eval_path = "<internal>";
 
   static constexpr std::size_t default_thread_count = 1;
   static constexpr std::size_t default_hash_size = 16;
@@ -41,8 +55,8 @@ struct uci {
 
   chess::board_history history{};
   chess::board position = chess::board::start_pos();
+  std::string eval_file_{std::string(embedded_eval_path)};
 
-  nnue::quantized_weights weights_{};
   search::worker_orchestrator orchestrator_;
 
   std::atomic_bool ponder_{false};

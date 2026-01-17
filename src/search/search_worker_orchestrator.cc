@@ -2,6 +2,22 @@
   Seer is a UCI chess engine by Connor McMonigle
   Copyright (C) 2021-2023  Connor McMonigle
 
+ * Stormphrax, a UCI chess engine
+ * Copyright (C) 2024 Ciekce
+ *
+ * Stormphrax is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Stormphrax is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Stormphrax. If not, see <https://www.gnu.org/licenses/>.
+
   Seer is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
@@ -31,7 +47,7 @@ void worker_orchestrator::resize(const std::size_t& new_size) noexcept {
   constants_->update_(new_size);
   const std::size_t old_size = workers_.size();
   workers_.resize(new_size);
-  for (std::size_t i(old_size); i < new_size; ++i) { workers_[i] = std::make_unique<search_worker>(weights_, tt_, constants_); }
+  for (std::size_t i(old_size); i < new_size; ++i) { workers_[i] = std::make_unique<search_worker>(tt_, constants_); }
 }
 
 void worker_orchestrator::go(const chess::board_history& hist, const chess::board& bd) noexcept {
@@ -79,14 +95,12 @@ std::size_t worker_orchestrator::tb_hits() const noexcept {
 search_worker& worker_orchestrator::primary_worker() noexcept { return *workers_[primary_id]; }
 
 worker_orchestrator::worker_orchestrator(
-    const nnue::quantized_weights* weights,
     std::size_t hash_table_size,
     std::function<void(const search_worker&)> on_iter,
     std::function<void(const search_worker&)> on_update) noexcept {
-  weights_ = weights;
   tt_ = std::make_shared<transposition_table>(hash_table_size);
   constants_ = std::make_shared<search_constants>();
-  workers_.push_back(std::make_unique<search_worker>(weights, tt_, constants_, on_iter, on_update));
+  workers_.push_back(std::make_unique<search_worker>(tt_, constants_, on_iter, on_update));
 }
 
 worker_orchestrator::~worker_orchestrator() noexcept {

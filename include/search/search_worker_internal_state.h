@@ -2,6 +2,22 @@
   Seer is a UCI chess engine by Connor McMonigle
   Copyright (C) 2021-2023  Connor McMonigle
 
+ * Stormphrax, a UCI chess engine
+ * Copyright (C) 2024 Ciekce
+ *
+ * Stormphrax is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Stormphrax is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Stormphrax. If not, see <https://www.gnu.org/licenses/>.
+
   Seer is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
@@ -18,8 +34,7 @@
 #pragma once
 
 #include <chess/move.h>
-#include <nnue/eval.h>
-#include <nnue/feature_reset_cache.h>
+#include <eval/nnue.h>
 #include <search/eval_cache.h>
 #include <search/eval_correction_history.h>
 #include <search/history_heuristic.h>
@@ -31,9 +46,8 @@
 namespace search {
 
 struct search_worker_internal_state {
-  nnue::sided_feature_reset_cache reset_cache{};
   search_stack stack{chess::board_history{}, chess::board::start_pos()};
-  nnue::eval::scratchpad_type scratchpad{};
+  eval::NnueState nnue_state{};
   sided_history_heuristic hh{};
   eval_cache cache{};
   sided_eval_correction_history correction{};
@@ -49,7 +63,7 @@ struct search_worker_internal_state {
   std::atomic<chess::move::data_type> best_move{};
   std::atomic<chess::move::data_type> ponder_move{};
 
-  [[nodiscard]] bool keep_going() const noexcept { return go.load(std::memory_order::memory_order_relaxed); }
+  [[nodiscard]] bool keep_going() const noexcept { return go.load(std::memory_order_relaxed); }
 
   template <std::size_t N>
   [[nodiscard]] inline bool one_of() const noexcept {

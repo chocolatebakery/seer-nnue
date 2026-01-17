@@ -2,6 +2,22 @@
   Seer is a UCI chess engine by Connor McMonigle
   Copyright (C) 2021-2023  Connor McMonigle
 
+ * Stormphrax, a UCI chess engine
+ * Copyright (C) 2024 Ciekce
+ *
+ * Stormphrax is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Stormphrax is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Stormphrax. If not, see <https://www.gnu.org/licenses/>.
+
   Seer is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
@@ -23,12 +39,12 @@ std::ostream& operator<<(std::ostream& os, const bench_info& info) noexcept {
   return os << info.total_nodes << " nodes " << info.nodes_per_second << " nps";
 }
 
-bench_info get_bench_info(const nnue::quantized_weights& weights) noexcept {
+bench_info get_bench_info() noexcept {
   using worker_type = search::search_worker;
   std::shared_ptr<search::search_constants> constants = std::make_shared<search::search_constants>(1);
   std::shared_ptr<search::transposition_table> tt = std::make_shared<search::transposition_table>(bench_config::tt_mb_size);
 
-  std::unique_ptr<worker_type> worker = std::make_unique<worker_type>(&weights, tt, constants, [&](const auto& w) {
+  std::unique_ptr<worker_type> worker = std::make_unique<worker_type>(tt, constants, [&](const auto& w) {
     if (w.depth() >= bench_config::bench_depth) { worker->stop(); }
   });
 

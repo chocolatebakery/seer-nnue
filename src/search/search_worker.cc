@@ -2,6 +2,22 @@
   Seer is a UCI chess engine by Connor McMonigle
   Copyright (C) 2021-2023  Connor McMonigle
 
+ * Stormphrax, a UCI chess engine
+ * Copyright (C) 2024 Ciekce
+ *
+ * Stormphrax is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Stormphrax is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Stormphrax. If not, see <https://www.gnu.org/licenses/>.
+
   Seer is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
@@ -18,13 +34,24 @@
 #include <search/move_orderer.h>
 #include <search/search_worker.h>
 #include <search/syzygy.h>
+#include <zobrist/zobrist_hasher.h>
+
+namespace {
+// Convert Bullet NNUE centipawn output to Seer's internal logit scale.
+constexpr search::score_type nnue_scale_numerator = 1024;
+constexpr search::score_type nnue_scale_denominator = 288;
+
+inline search::score_type scale_nnue_score(const eval::i32 raw) {
+  return static_cast<search::score_type>(raw) * nnue_scale_numerator / nnue_scale_denominator;
+}
+}  // namespace
 
 namespace search {
 
 template <bool is_pv, bool use_tt>
 inline evaluate_info search_worker::evaluate(
     const stack_view& ss,
-    nnue::eval_node& eval_node,
+    eval::NnueState& nnue_state,
     const chess::board& bd,
     const std::optional<transposition_table_entry>& maybe) noexcept {
   const bool is_check = bd.is_check() || bd.in_atomic_blast_check();
@@ -35,14 +62,17 @@ inline evaluate_info search_worker::evaluate(
     if (is_check) { return eval_cache_entry::make(default_hash, default_hash, ss.loss_score()); }
     if (const auto maybe_eval = internal.cache.find(bd.hash()); !is_pv && maybe_eval.has_value()) { return maybe_eval.value(); }
 
-    const nnue::eval& evaluator = eval_node.evaluator();
     const zobrist::hash_type hash = bd.hash();
+    const chess::color stm = bd.turn() ? chess::color::white : chess::color::black;
+    const score_type eval = scale_nnue_score(nnue_state.evaluate(bd, stm));
 
-    const auto [eval_feature_hash, eval] = evaluator.evaluate(bd.turn(), bd.phase<nnue::weights::parameter_type>(), [](const auto& final_output) {
-      constexpr std::size_t dimension = nnue::eval::final_output_type::dimension;
-      return zobrist::zobrist_hasher<zobrist::quarter_hash_type, dimension>.compute_hash(
-          [&final_output](const std::size_t& i) { return final_output.data[i] > nnue::weights::parameter_type{}; });
-    });
+    constexpr std::size_t feature_hash_dim = 256;
+    static_assert(eval::Layer1Size >= feature_hash_dim);
+
+    const auto outputs = nnue_state.outputs(stm);
+    const auto eval_feature_hash =
+        zobrist::zobrist_hasher<zobrist::quarter_hash_type, feature_hash_dim>.compute_hash(
+            [&outputs](const std::size_t& i) { return outputs[i] > 0; });
 
     return eval_cache_entry::make(hash, eval_feature_hash, eval);
   }();
@@ -71,7 +101,7 @@ inline evaluate_info search_worker::evaluate(
 template <bool is_pv, bool use_tt>
 score_type search_worker::q_search(
     const stack_view& ss,
-    nnue::eval_node& eval_node,
+    eval::NnueState& nnue_state,
     const chess::board& bd,
     score_type alpha,
     const score_type& beta,
@@ -101,7 +131,7 @@ score_type search_worker::q_search(
     if (use_tt && is_cutoff) { return entry.score(); }
   }
 
-  const auto [feature_hash, static_value, value] = evaluate<is_pv, use_tt>(ss, eval_node, bd, maybe);
+  const auto [feature_hash, static_value, value] = evaluate<is_pv, use_tt>(ss, nnue_state, bd, maybe);
 
   if (!is_check_any && value >= beta) { return value; }
   if (ss.reached_max_height()) { return value; }
@@ -139,9 +169,10 @@ score_type search_worker::q_search(
     const chess::board bd_ = bd.forward(mv);
     external.tt->prefetch(bd_.hash());
     internal.cache.prefetch(bd_.hash());
-    nnue::eval_node eval_node_ = eval_node.dirty_child(&internal.reset_cache, &bd, mv);
-
-    const score_type score = -q_search<is_pv, use_tt>(ss.next(), eval_node_, bd_, -beta, -alpha, elevation + 1);
+    const auto updates = eval::buildUpdates(bd, bd_);
+    nnue_state.update<true>(updates, bd_);
+    const score_type score = -q_search<is_pv, use_tt>(ss.next(), nnue_state, bd_, -beta, -alpha, elevation + 1);
+    nnue_state.pop();
 
     if (score > best_score) {
       best_score = score;
@@ -169,8 +200,10 @@ score_type search_worker::q_search(
       const chess::board bd_promo = bd.forward(mv);
 
       ss.set_played(mv);
-      nnue::eval_node eval_node_promo = eval_node.dirty_child(&internal.reset_cache, &bd, mv);
-      const score_type score = -q_search<is_pv, use_tt>(ss.next(), eval_node_promo, bd_promo, -beta, -alpha, elevation + 1);
+      const auto updates = eval::buildUpdates(bd, bd_promo);
+      nnue_state.update<true>(updates, bd_promo);
+      const score_type score = -q_search<is_pv, use_tt>(ss.next(), nnue_state, bd_promo, -beta, -alpha, elevation + 1);
+      nnue_state.pop();
 
       if (score > best_score) {
         best_score = score;
@@ -213,8 +246,10 @@ score_type search_worker::q_search(
       ++explored_threats;
 
       ss.set_played(mv);
-      nnue::eval_node eval_node_threat = eval_node.dirty_child(&internal.reset_cache, &bd, mv);
-      const score_type score = -q_search<is_pv, use_tt>(ss.next(), eval_node_threat, bd_threat, -beta, -alpha, elevation + 1);
+      const auto updates = eval::buildUpdates(bd, bd_threat);
+      nnue_state.update<true>(updates, bd_threat);
+      const score_type score = -q_search<is_pv, use_tt>(ss.next(), nnue_state, bd_threat, -beta, -alpha, elevation + 1);
+      nnue_state.pop();
 
       if (score > best_score) {
         best_score = score;
@@ -244,7 +279,7 @@ score_type search_worker::q_search(
 template <bool is_pv, bool is_root>
 pv_search_result_t<is_root> search_worker::pv_search(
     const stack_view& ss,
-    nnue::eval_node& eval_node,
+    eval::NnueState& nnue_state,
     const chess::board& bd,
     score_type alpha,
     const score_type& beta,
@@ -262,7 +297,7 @@ pv_search_result_t<is_root> search_worker::pv_search(
   if (should_update) { external.on_update(*this); }
 
   // step 1. drop into qsearch if depth reaches zero
-  if (depth <= 0) { return make_result(q_search<is_pv>(ss, eval_node, bd, alpha, beta, 0), chess::move::null()); }
+  if (depth <= 0) { return make_result(q_search<is_pv>(ss, nnue_state, bd, alpha, beta, 0), chess::move::null()); }
   ++internal.nodes;
   if (!bd.man_.us(bd.turn()).king().any()) { return make_result(ss.loss_score(), chess::move::null()); }
   if (!bd.man_.them(bd.turn()).king().any()) { return make_result(ss.win_score(), chess::move::null()); }
@@ -313,7 +348,7 @@ pv_search_result_t<is_root> search_worker::pv_search(
   if (should_iir) { --depth; }
 
   // step 4. compute static eval and adjust appropriately if there's a tt hit
-  const auto [feature_hash, static_value, value] = evaluate<is_pv>(ss, eval_node, bd, maybe);
+  const auto [feature_hash, static_value, value] = evaluate<is_pv>(ss, nnue_state, bd, maybe);
 
   // step 5. return static eval if max depth was reached
   if (ss.reached_max_height()) { return make_result(value, chess::move::null()); }
@@ -327,7 +362,7 @@ pv_search_result_t<is_root> search_worker::pv_search(
                          value + external.constants->razor_margin(depth) <= alpha;
 
   if (try_razor) {
-    const score_type razor_score = q_search<false>(ss, eval_node, bd, alpha, alpha + 1, 0);
+    const score_type razor_score = q_search<false>(ss, nnue_state, bd, alpha, alpha + 1, 0);
     if (razor_score <= alpha) { return make_result(razor_score, chess::move::null()); }
   }
 
@@ -350,8 +385,12 @@ pv_search_result_t<is_root> search_worker::pv_search(
   if (try_nmp) {
     ss.set_played(chess::move::null());
     const depth_type adjusted_depth = std::max(0, depth - external.constants->nmp_reduction(depth, beta, value));
+    const chess::board bd_null = bd.forward(chess::move::null());
+    const auto updates = eval::buildUpdates(bd, bd_null);
+    nnue_state.update<true>(updates, bd_null);
     const score_type nmp_score =
-        -pv_search<false>(ss.next(), eval_node, bd.forward(chess::move::null()), -beta, -beta + 1, adjusted_depth, chess::player_from(!bd.turn()));
+        -pv_search<false>(ss.next(), nnue_state, bd_null, -beta, -beta + 1, adjusted_depth, chess::player_from(!bd.turn()));
+    nnue_state.pop();
     if (nmp_score >= beta) { return make_result(nmp_score, chess::move::null()); }
   }
 
@@ -376,10 +415,11 @@ pv_search_result_t<is_root> search_worker::pv_search(
       const chess::board bd_ = bd.forward(mv);
       external.tt->prefetch(bd_.hash());
       internal.cache.prefetch(bd_.hash());
-      nnue::eval_node eval_node_ = eval_node.dirty_child(&internal.reset_cache, &bd, mv);
-
-      auto pv_score = [&] { return -pv_search<false>(ss.next(), eval_node_, bd_, -probcut_beta, -probcut_beta + 1, probcut_depth, reducer); };
-      const score_type q_score = -q_search<false>(ss.next(), eval_node_, bd_, -probcut_beta, -probcut_beta + 1, 0);
+      const auto updates = eval::buildUpdates(bd, bd_);
+      nnue_state.update<true>(updates, bd_);
+      auto pv_score = [&] { return -pv_search<false>(ss.next(), nnue_state, bd_, -probcut_beta, -probcut_beta + 1, probcut_depth, reducer); };
+      const score_type q_score = -q_search<false>(ss.next(), nnue_state, bd_, -probcut_beta, -probcut_beta + 1, 0);
+      nnue_state.pop();
       const score_type probcut_score = (q_score >= probcut_beta) ? pv_score() : q_score;
 
       if (probcut_score >= probcut_beta) { return make_result(probcut_score, mv); }
@@ -419,6 +459,25 @@ pv_search_result_t<is_root> search_worker::pv_search(
     const std::size_t nodes_before = internal.nodes.load(std::memory_order_relaxed);
     const counter_type history_value = internal.hh.us(bd.turn()).compute_value(history::context{follow, counter, threatened, pawn_hash}, mv);
 
+    if (bd.is_atomic_king_blast_capture(mv)) {
+      ss.set_played(mv);
+      const score_type score = ss.win_score();
+
+      if (score > best_score) {
+        best_score = score;
+        best_move = mv;
+        if (score > alpha) {
+          alpha = score;
+          if constexpr (is_pv) { ss.prepend_to_pv(mv); }
+        }
+      }
+
+      if constexpr (is_root) { internal.node_distribution[mv] += (internal.nodes.load(std::memory_order_relaxed) - nodes_before); }
+
+      if (best_score >= beta) { break; }
+      continue;
+    }
+
     const chess::board bd_ = bd.forward(mv);
 
     const bool try_pruning = !is_root && idx >= 2 && best_score > max_mate_score;
@@ -453,7 +512,6 @@ pv_search_result_t<is_root> search_worker::pv_search(
 
     external.tt->prefetch(bd_.hash());
     internal.cache.prefetch(bd_.hash());
-    nnue::eval_node eval_node_ = eval_node.dirty_child(&internal.reset_cache, &bd, mv);
 
     // step 12. extensions
     bool multicut = false;
@@ -466,7 +524,7 @@ pv_search_result_t<is_root> search_worker::pv_search(
         const depth_type singular_depth = external.constants->singular_search_depth(depth);
         const score_type singular_beta = external.constants->singular_beta(maybe->score(), depth);
         ss.set_excluded(mv);
-        const score_type excluded_score = pv_search<false>(ss, eval_node, bd, singular_beta - 1, singular_beta, singular_depth, reducer);
+        const score_type excluded_score = pv_search<false>(ss, nnue_state, bd, singular_beta - 1, singular_beta, singular_depth, reducer);
         ss.set_excluded(chess::move::null());
 
         if (!is_pv && excluded_score + external.constants->singular_double_extension_margin() < singular_beta) {
@@ -485,15 +543,17 @@ pv_search_result_t<is_root> search_worker::pv_search(
     if (!is_root && multicut) { return make_result(beta, chess::move::null()); }
 
     ss.set_played(mv);
+    const auto updates = eval::buildUpdates(bd, bd_);
+    nnue_state.update<true>(updates, bd_);
 
     const score_type score = [&, this, idx = idx, mv = mv] {
       const depth_type next_depth = depth + extension - 1;
 
-      auto full_width = [&] { return -pv_search<is_pv>(ss.next(), eval_node_, bd_, -beta, -alpha, next_depth, reducer); };
+      auto full_width = [&] { return -pv_search<is_pv>(ss.next(), nnue_state, bd_, -beta, -alpha, next_depth, reducer); };
 
       auto zero_width = [&](const depth_type& zw_depth) {
         const chess::player_type next_reducer = (is_pv || zw_depth < next_depth) ? chess::player_from(bd.turn()) : reducer;
-        return -pv_search<false>(ss.next(), eval_node_, bd_, -alpha - 1, -alpha, zw_depth, next_reducer);
+        return -pv_search<false>(ss.next(), nnue_state, bd_, -alpha - 1, -alpha, zw_depth, next_reducer);
       };
 
       if (is_pv && idx == 0) { return full_width(); }
@@ -538,6 +598,7 @@ pv_search_result_t<is_root> search_worker::pv_search(
       // search again with full window on pv nodes
       return (is_pv && (alpha < zw_score && zw_score < beta)) ? full_width() : zw_score;
     }();
+    nnue_state.pop();
 
     if (score < beta && (mv.is_quiet() || !bd.see_gt(mv, 0))) { moves_tried.push(mv); }
 
@@ -584,12 +645,7 @@ pv_search_result_t<is_root> search_worker::pv_search(
 }
 
 void search_worker::iterative_deepening_loop() noexcept {
-  internal.reset_cache.reinitialize(external.weights);
-  nnue::eval_node root_node = nnue::eval_node::clean_node([this] {
-    nnue::eval result(external.weights, &internal.scratchpad, 0, 0);
-    internal.stack.root().feature_full_reset(result);
-    return result;
-  }());
+  internal.nnue_state.reset(internal.stack.root());
 
   score_type alpha = -big_number;
   score_type beta = big_number;
@@ -610,7 +666,7 @@ void search_worker::iterative_deepening_loop() noexcept {
 
       const depth_type adjusted_depth = std::max(1, internal.depth - consecutive_failed_high_count);
       const auto [search_score, search_move] = pv_search<true, true>(
-          stack_view::root(internal.stack), root_node, internal.stack.root(), alpha, beta, adjusted_depth, chess::player_type::none);
+          stack_view::root(internal.stack), internal.nnue_state, internal.stack.root(), alpha, beta, adjusted_depth, chess::player_type::none);
 
       if (!internal.keep_going()) { break; }
 
@@ -645,7 +701,7 @@ void search_worker::iterative_deepening_loop() noexcept {
 
 template search::score_type search::search_worker::q_search<false, false>(
     const stack_view& ss,
-    nnue::eval_node& eval_node,
+    eval::NnueState& nnue_state,
     const chess::board& bd,
     score_type alpha,
     const score_type& beta,
@@ -653,7 +709,7 @@ template search::score_type search::search_worker::q_search<false, false>(
 
 template search::score_type search::search_worker::q_search<true, false>(
     const stack_view& ss,
-    nnue::eval_node& eval_node,
+    eval::NnueState& nnue_state,
     const chess::board& bd,
     score_type alpha,
     const score_type& beta,

@@ -2,6 +2,22 @@
   Seer is a UCI chess engine by Connor McMonigle
   Copyright (C) 2021-2023  Connor McMonigle
 
+ * Stormphrax, a UCI chess engine
+ * Copyright (C) 2024 Ciekce
+ *
+ * Stormphrax is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Stormphrax is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Stormphrax. If not, see <https://www.gnu.org/licenses/>.
+
   Seer is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
   the Free Software Foundation, either version 3 of the License, or
@@ -20,7 +36,7 @@
 #include <chess/board.h>
 #include <chess/move.h>
 #include <chess/move_list.h>
-#include <nnue/eval_node.h>
+#include <eval/nnue.h>
 #include <search/search_constants.h>
 #include <search/search_stack.h>
 #include <search/search_worker_external_state.h>
@@ -59,12 +75,12 @@ struct search_worker {
 
   template <bool is_pv, bool use_tt = true>
   [[nodiscard]] inline evaluate_info
-  evaluate(const stack_view& ss, nnue::eval_node& eval_node, const chess::board& bd, const std::optional<transposition_table_entry>& maybe) noexcept;
+  evaluate(const stack_view& ss, eval::NnueState& nnue_state, const chess::board& bd, const std::optional<transposition_table_entry>& maybe) noexcept;
 
   template <bool is_pv, bool use_tt = true>
   [[nodiscard]] score_type q_search(
       const stack_view& ss,
-      nnue::eval_node& eval_node,
+      eval::NnueState& nnue_state,
       const chess::board& bd,
       score_type alpha,
       const score_type& beta,
@@ -73,7 +89,7 @@ struct search_worker {
   template <bool is_pv, bool is_root = false>
   [[nodiscard]] pv_search_result_t<is_root> pv_search(
       const stack_view& ss,
-      nnue::eval_node& eval_node,
+      eval::NnueState& nnue_state,
       const chess::board& bd,
       score_type alpha,
       const score_type& beta,
@@ -109,12 +125,11 @@ struct search_worker {
   void stop() noexcept { internal.go.store(false); }
 
   search_worker(
-      const nnue::quantized_weights* weights,
       std::shared_ptr<transposition_table> tt,
       std::shared_ptr<search_constants> constants,
       std::function<void(const search_worker&)> on_iter = [](auto&&...) {},
       std::function<void(const search_worker&)> on_update = [](auto&&...) {}) noexcept
-      : external(weights, tt, constants, on_iter, on_update) {}
+      : external(tt, constants, on_iter, on_update) {}
 };
 
 }  // namespace search
