@@ -16,11 +16,15 @@
 */
 
 #include <engine/uci.h>
+#include <seer_datagen_main.h>
 
 #include <iostream>
 #include <string>
 
 int main(const int argc, const char* argv[]) {
+  const bool run_datagen = (argc >= 2) && (std::string(argv[1]) == "datagen");
+  if (run_datagen) { return seer_datagen_main(argc - 1, argv + 1); }
+
   engine::uci uci{};
 
   const bool perform_bench = (argc == 2) && (std::string(argv[1]) == "bench");

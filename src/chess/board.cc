@@ -1481,6 +1481,7 @@ std::ostream& operator<<(std::ostream& ostr, const board& bd) noexcept {
 
 template chess::move_list chess::board::generate_moves<chess::generation_mode::all>() const noexcept;
 template chess::move_list chess::board::generate_moves<chess::generation_mode::noisy_and_check>() const noexcept;
+template chess::move_list chess::board::generate_moves<chess::generation_mode::noisy>() const noexcept;
 template chess::move_list chess::board::generate_moves<chess::generation_mode::quiet_and_check>() const noexcept;
 
 template bool chess::board::is_legal<chess::generation_mode::all>(const chess::move&) const noexcept;
